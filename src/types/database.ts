@@ -25,6 +25,11 @@ export interface Database {
           notify_email: boolean;
           organization: string | null;
           pending_organizations: string | null;
+          suspended_at: string | null;
+          suspended_reason: string | null;
+          emergency_contact_name: string | null;
+          emergency_contact_phone: string | null;
+          share_phone_when_matched: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -104,10 +109,17 @@ export interface Database {
           return_time: string | null;
           notes: string | null;
           visibility: "circle" | "organization" | "community";
-          status: "open" | "matched" | "completed" | "cancelled";
+          status: "open" | "matched" | "completed" | "cancelled" | "expired";
           matched_offer_id: string | null;
           created_at: string;
           updated_at: string;
+          matched_at: string | null;
+          completed_at: string | null;
+          cancelled_at: string | null;
+          picked_up_at: string | null;
+          dropped_off_at: string | null;
+          series_id: string | null;
+          parent_ride_id: string | null;
         };
         Insert: {
           id?: string;
@@ -126,7 +138,7 @@ export interface Database {
           return_time?: string | null;
           notes?: string | null;
           visibility?: "circle" | "organization" | "community";
-          status?: "open" | "matched" | "completed" | "cancelled";
+          status?: "open" | "matched" | "completed" | "cancelled" | "expired";
           matched_offer_id?: string | null;
           created_at?: string;
           updated_at?: string;
@@ -146,7 +158,7 @@ export interface Database {
           return_time?: string | null;
           notes?: string | null;
           visibility?: "circle" | "organization" | "community";
-          status?: "open" | "matched" | "completed" | "cancelled";
+          status?: "open" | "matched" | "completed" | "cancelled" | "expired";
           matched_offer_id?: string | null;
           updated_at?: string;
         };
@@ -158,7 +170,7 @@ export interface Database {
           driver_id: string;
           suggested_price: string | null;
           message: string | null;
-          status: "pending" | "accepted" | "declined" | "withdrawn";
+          status: "pending" | "accepted" | "declined" | "withdrawn" | "backed_out" | "no_show" | "cancelled";
           created_at: string;
           updated_at: string;
         };
@@ -203,6 +215,7 @@ export interface Database {
           sender_id: string;
           content: string;
           created_at: string;
+          is_admin_message?: boolean;
         };
         Insert: {
           id?: string;
@@ -219,8 +232,12 @@ export interface Database {
           user_id: string;
           license_attestation: boolean;
           insurance_attestation: boolean;
-          status: "pending" | "approved" | "denied" | "suspended";
+          status: "pending" | "approved" | "denied" | "suspended" | "expired";
           driver_scope: string | null;
+          license_expires_on: string | null;
+          insurance_expires_on: string | null;
+          license_doc_path: string | null;
+          insurance_doc_path: string | null;
           admin_notes: string | null;
           reviewed_by: string | null;
           reviewed_at: string | null;

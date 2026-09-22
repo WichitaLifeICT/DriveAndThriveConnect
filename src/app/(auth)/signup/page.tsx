@@ -1,5 +1,9 @@
 import { SignupForm } from "@/components/auth/signup-form";
+import { getActiveOrganizations } from "@/actions/organizations";
 
-export default function SignupPage() {
-  return <SignupForm />;
+export const dynamic = "force-dynamic";
+
+export default async function SignupPage() {
+  const organizations = await getActiveOrganizations();
+  return <SignupForm organizations={organizations} />;
 }

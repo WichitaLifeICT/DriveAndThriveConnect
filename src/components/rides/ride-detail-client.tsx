@@ -1,10 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { createOffer, acceptOffer, declineOffer } from "@/actions/offers";
-import { updateRideStatus } from "@/actions/rides";
+import Link from "next/link";
+import { createOffer, acceptOffer, declineOffer, withdrawOffer, backOutOfRide } from "@/actions/offers";
+import { cancelRide, checkIn, reportNoShow, enableTripSharing, disableTripSharing } from "@/actions/rides";
 import { submitReview } from "@/actions/reviews";
 import { getOrCreateThread } from "@/actions/messages";
+import { blockUser, unblockUser } from "@/actions/safety";
+import { ReportDialog } from "@/components/safety/report-dialog";
+import { toE164 } from "@/lib/phone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -84,31 +88,62 @@ function DriverRatingBadge({
 }
 
 /* ─── Main Component ─── */
+type RideWithRider = RideRequest & {
+  rider: { id: string; full_name: string | null; avatar_url: string | null } | null;
+  picked_up_at?: string | null;
+  dropped_off_at?: string | null;
+  series_id?: string | null;
+  parent_ride_id?: string | null;
+};
+
 interface RideDetailClientProps {
-  ride: RideRequest & { rider: { id: string; full_name: string | null; avatar_url: string | null } | null };
+  ride: RideWithRider;
   offers: (RideOffer & { driver: { id: string; full_name: string | null; avatar_url: string | null } | null })[];
   isRider: boolean;
+  isMatchedDriver: boolean;
   currentUserId: string;
   existingOffer: RideOffer | null;
   existingReview: DriverReview | null;
   driverRatings: Record<string, { average: number; count: number }>;
   acceptedDriverId: string | null;
+  acceptedDriverName: string | null;
+  contact: { name: string | null; phone: string | null; role: string } | null;
+  shareToken: string | null;
+  emergencyContact: { name: string | null; phone: string | null } | null;
+  seriesUpcoming: number;
+  riderBlocked: boolean;
+}
+
+function formatTimestamp(ts: string) {
+  return new Date(ts).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
 }
 
 export function RideDetailClient({
   ride,
   offers,
   isRider,
+  isMatchedDriver,
   currentUserId,
   existingOffer,
   existingReview,
   driverRatings,
   acceptedDriverId,
+  acceptedDriverName,
+  contact,
+  shareToken: initialShareToken,
+  emergencyContact,
+  seriesUpcoming,
+  riderBlocked,
 }: RideDetailClientProps) {
   const router = useRouter();
   const [showOfferForm, setShowOfferForm] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<"cancel" | "backout" | "noshow" | null>(null);
+  const [reasonText, setReasonText] = useState("");
+  const [shareToken, setShareToken] = useState(initialShareToken);
+  const [copied, setCopied] = useState(false);
 
   // Review state
   const [reviewRating, setReviewRating] = useState(0);
@@ -116,57 +151,72 @@ export function RideDetailClient({
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewSubmitted, setReviewSubmitted] = useState(!!existingReview);
 
-  const statusConfig = RIDE_STATUSES[ride.status as keyof typeof RIDE_STATUSES];
+  const statusConfig =
+    RIDE_STATUSES[ride.status as keyof typeof RIDE_STATUSES] || { label: ride.status, color: "bg-gray-100 text-gray-800" };
   const visConfig = VISIBILITY_TIERS.find((v) => v.value === ride.visibility);
+  const isParticipant = isRider || isMatchedDriver;
+  const isMatched = ride.status === "matched";
+  const shareUrl = shareToken && typeof window !== "undefined" ? `${window.location.origin}/trip/${shareToken}` : null;
 
-  async function handleCreateOffer(formData: FormData) {
-    setLoading(true);
+  async function run(key: string, action: () => Promise<{ error?: string } | undefined | void>, successNotice?: string) {
+    setLoading(key);
     setError(null);
-    formData.set("ride_request_id", ride.id);
-    const result = await createOffer(formData);
-    if (result?.error) {
+    setNotice(null);
+    const result = await action();
+    if (result && "error" in result && result.error) {
       setError(result.error);
     } else {
-      setShowOfferForm(false);
+      if (successNotice) setNotice(successNotice);
+      setConfirming(null);
+      setReasonText("");
       router.refresh();
     }
-    setLoading(false);
+    setLoading(null);
   }
 
-  async function handleAcceptOffer(offerId: string) {
-    setLoading(true);
-    const result = await acceptOffer(offerId, ride.id);
-    if (result?.error) setError(result.error);
-    else router.refresh();
-    setLoading(false);
-  }
-
-  async function handleDeclineOffer(offerId: string) {
-    setLoading(true);
-    const result = await declineOffer(offerId, ride.id);
-    if (result?.error) setError(result.error);
-    else router.refresh();
-    setLoading(false);
-  }
-
-  async function handleCancel() {
-    setLoading(true);
-    await updateRideStatus(ride.id, "cancelled");
-    router.refresh();
-    setLoading(false);
-  }
-
-  async function handleComplete() {
-    setLoading(true);
-    await updateRideStatus(ride.id, "completed");
-    router.refresh();
-    setLoading(false);
+  async function handleCreateOffer(formData: FormData) {
+    formData.set("ride_request_id", ride.id);
+    await run("offer", async () => {
+      const result = await createOffer(formData);
+      if (!result?.error) setShowOfferForm(false);
+      return result;
+    });
   }
 
   async function handleMessage(driverId: string) {
+    setError(null);
     const result = await getOrCreateThread(ride.id, driverId);
     if (result?.threadId) {
       router.push(`/messages/${result.threadId}`);
+    } else if (result?.error) {
+      setError(result.error);
+    }
+  }
+
+  async function handleShare() {
+    let token = shareToken;
+    if (!token) {
+      setLoading("share");
+      const result = await enableTripSharing(ride.id);
+      setLoading(null);
+      if (result.error || !result.token) {
+        setError(result.error || "Couldn't create a share link.");
+        return;
+      }
+      token = result.token;
+      setShareToken(token);
+    }
+    const url = `${window.location.origin}/trip/${token}`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "Follow my ride", text: "Here's a live status link for my ride.", url });
+        return;
+      }
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Share sheet dismissed
     }
   }
 
@@ -234,32 +284,270 @@ export function RideDetailClient({
             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
               {visConfig?.label}
             </span>
+            {ride.is_round_trip && (
+              <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
+                Round trip{ride.return_time ? ` · back at ${formatRideTime(ride.return_time)}` : ""}
+              </span>
+            )}
+            {ride.series_id && (
+              <span className="text-xs bg-purple-50 text-purple-700 px-2 py-1 rounded-full">Weekly ride</span>
+            )}
+            {ride.parent_ride_id && (
+              <Link href={`/rides/${ride.parent_ride_id}`} className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full">
+                Return trip · view outbound ride
+              </Link>
+            )}
           </div>
 
           {ride.notes && (
             <div className="pt-2 border-t border-gray-100">
               <p className="text-xs text-gray-400 mb-1">Notes</p>
-              <p className="text-sm text-gray-700">{ride.notes}</p>
+              <p className="text-sm text-gray-700 whitespace-pre-line">{ride.notes}</p>
+            </div>
+          )}
+
+          {(ride.picked_up_at || ride.dropped_off_at) && (
+            <div className="pt-2 border-t border-gray-100 text-sm text-gray-700 space-y-1">
+              {ride.picked_up_at && <p>✓ Picked up at {formatTimestamp(ride.picked_up_at)}</p>}
+              {ride.dropped_off_at && <p>✓ Dropped off at {formatTimestamp(ride.dropped_off_at)}</p>}
             </div>
           )}
         </div>
 
-        {/* Rider actions */}
+        {/* Rider actions on an open ride */}
         {isRider && ride.status === "open" && (
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <Button variant="danger" size="sm" onClick={handleCancel} loading={loading}>
+          <div className="mt-4 pt-4 border-t border-gray-100 flex flex-wrap gap-2">
+            <Link
+              href={`/rides/${ride.id}/edit`}
+              className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+            >
+              Edit
+            </Link>
+            <Button variant="danger" size="sm" onClick={() => setConfirming("cancel")}>
               Cancel Request
             </Button>
           </div>
         )}
-        {isRider && ride.status === "matched" && (
-          <div className="mt-4 pt-4 border-t border-gray-100">
-            <Button size="sm" onClick={handleComplete} loading={loading}>
-              Mark as Completed
-            </Button>
+
+        {/* Check-ins for the rider and matched driver */}
+        {isParticipant && isMatched && (
+          <div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+            <p className="text-xs text-gray-500">Check in so everyone knows where the ride is.</p>
+            <div className="flex flex-wrap gap-2">
+              {!ride.picked_up_at && (
+                <Button size="sm" variant="secondary" loading={loading === "pickup"} onClick={() => run("pickup", () => checkIn(ride.id, "picked_up"))}>
+                  Picked up
+                </Button>
+              )}
+              <Button size="sm" loading={loading === "dropoff"} onClick={() => run("dropoff", () => checkIn(ride.id, "dropped_off"))}>
+                Dropped off — ride complete
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
+              {isRider && (
+                <>
+                  <button className="text-sm text-gray-600 hover:text-gray-900" onClick={() => setConfirming("cancel")}>
+                    Cancel ride
+                  </button>
+                  {!ride.picked_up_at && (
+                    <button className="text-sm text-gray-600 hover:text-gray-900" onClick={() => setConfirming("noshow")}>
+                      Driver didn&apos;t show up
+                    </button>
+                  )}
+                </>
+              )}
+              {isMatchedDriver && !ride.picked_up_at && (
+                <button className="text-sm text-gray-600 hover:text-gray-900" onClick={() => setConfirming("backout")}>
+                  I can&apos;t make it
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Confirmations */}
+        {confirming && (
+          <div className="mt-4 p-3 rounded-lg bg-gray-50 border border-gray-200 space-y-3">
+            {confirming === "cancel" && (
+              <>
+                <p className="text-sm text-gray-800">
+                  Cancel this ride?{isMatched ? " Your driver will be notified right away." : ""}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="danger" loading={loading === "cancel"} onClick={() => run("cancel", () => cancelRide(ride.id), "Ride cancelled.")}>
+                    Cancel this ride
+                  </Button>
+                  {seriesUpcoming > 1 && (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      loading={loading === "cancel-series"}
+                      onClick={() => run("cancel-series", () => cancelRide(ride.id, { wholeSeries: true }), "Weekly rides cancelled.")}
+                    >
+                      Cancel all {seriesUpcoming} upcoming weekly rides
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+                    Keep ride
+                  </Button>
+                </div>
+              </>
+            )}
+            {confirming === "backout" && (
+              <>
+                <p className="text-sm text-gray-800">
+                  Back out of this ride? The rider will be told immediately and the request reopened for other drivers.
+                </p>
+                <Textarea
+                  id="backout_reason"
+                  label="Reason (optional, shared with the rider)"
+                  rows={2}
+                  maxLength={500}
+                  value={reasonText}
+                  onChange={(e) => setReasonText(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <Button size="sm" variant="danger" loading={loading === "backout"} onClick={() => run("backout", () => backOutOfRide(ride.id, reasonText))}>
+                    Back out
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+                    Never mind
+                  </Button>
+                </div>
+              </>
+            )}
+            {confirming === "noshow" && (
+              <>
+                <p className="text-sm text-gray-800">
+                  Report that {acceptedDriverName || "your driver"} didn&apos;t show up? Admins will be notified, and if
+                  there&apos;s still time your request will reopen for other drivers.
+                </p>
+                <Textarea
+                  id="noshow_details"
+                  label="Details (optional)"
+                  rows={2}
+                  maxLength={1000}
+                  value={reasonText}
+                  onChange={(e) => setReasonText(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    loading={loading === "noshow"}
+                    onClick={() => run("noshow", () => reportNoShow(ride.id, reasonText), "Thanks for letting us know.")}
+                  >
+                    Report no-show
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setConfirming(null)}>
+                    Never mind
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         )}
       </Card>
+
+      {error && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm text-green-700">
+          {notice}
+        </div>
+      )}
+
+      {/* Contact + safety for a matched ride */}
+      {isParticipant && isMatched && (
+        <Card padding="lg">
+          <h3 className="font-medium text-gray-900 mb-3">
+            {contact?.role === "driver" ? "Your driver" : "Your rider"}: {contact?.name || "Unknown"}
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {contact?.phone ? (
+              <>
+                <a
+                  href={`tel:${toE164(contact.phone)}`}
+                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg bg-teal-600 text-white hover:bg-teal-700"
+                >
+                  Call {contact.phone}
+                </a>
+                <a
+                  href={`sms:${toE164(contact.phone)}`}
+                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                >
+                  Text
+                </a>
+              </>
+            ) : (
+              <p className="text-sm text-gray-500">No phone number shared — use in-app messages.</p>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => handleMessage(isRider ? acceptedDriverId! : currentUserId)}
+            >
+              Message
+            </Button>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+            <h4 className="text-sm font-medium text-gray-900">Safety</h4>
+            {isRider && (
+              <div>
+                <div className="flex flex-wrap gap-2 items-center">
+                  <Button size="sm" variant="secondary" loading={loading === "share"} onClick={handleShare}>
+                    {copied ? "Link copied!" : "Share trip status"}
+                  </Button>
+                  {emergencyContact?.phone && shareUrl && (
+                    <a
+                      href={`sms:${toE164(emergencyContact.phone)}?&body=${encodeURIComponent(`I'm taking a ride. Follow along here: ${shareUrl}`)}`}
+                      className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
+                    >
+                      Text {emergencyContact.name || "my emergency contact"}
+                    </a>
+                  )}
+                  {shareToken && (
+                    <button
+                      className="text-xs text-gray-500 hover:text-gray-700"
+                      onClick={async () => {
+                        await disableTripSharing(ride.id);
+                        setShareToken(null);
+                      }}
+                    >
+                      Stop sharing
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Anyone with the link can see this ride&apos;s status until you stop sharing.
+                  {!emergencyContact?.phone && (
+                    <>
+                      {" "}
+                      <Link href="/profile" className="text-teal-600">Add an emergency contact</Link> to text it in one tap.
+                    </>
+                  )}
+                </p>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-4">
+              <a href="tel:911" className="inline-flex items-center px-3 py-1.5 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700">
+                Emergency? Call 911
+              </a>
+              <ReportDialog
+                reportedUserId={isRider ? acceptedDriverId : ride.rider_id}
+                reportedUserName={contact?.name}
+                rideRequestId={ride.id}
+                defaultCategory="safety_incident"
+                triggerLabel="Report a safety concern"
+              />
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Rate Your Driver — shows after ride is completed for the rider */}
       {isRider && ride.status === "completed" && acceptedDriverId && (
@@ -319,112 +607,126 @@ export function RideDetailClient({
                   Submit Review
                 </Button>
               </div>
+              <div className="mt-3 text-center">
+                <ReportDialog
+                  reportedUserId={acceptedDriverId}
+                  reportedUserName={acceptedDriverName}
+                  rideRequestId={ride.id}
+                  triggerLabel="Something went wrong on this ride? Report it"
+                  triggerClassName="text-xs text-gray-500 hover:text-gray-700"
+                />
+              </div>
             </>
           )}
         </Card>
       )}
 
-      {error && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-          {error}
+      {/* Offers */}
+      {(isRider || offers.length > 0) && (
+        <div>
+          <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
+            Offers ({offers.length})
+          </h3>
+
+          {offers.length === 0 && (
+            <Card>
+              <p className="text-sm text-gray-500 text-center py-4">
+                No offers yet. We&apos;ll notify you when a driver offers.
+              </p>
+            </Card>
+          )}
+
+          <div className="space-y-3">
+            {offers.map((offer) => {
+              const offerStatus =
+                OFFER_STATUSES[offer.status as keyof typeof OFFER_STATUSES] || { label: offer.status, color: "bg-gray-100 text-gray-800" };
+              const driverRating = driverRatings[offer.driver_id];
+              const isMine = offer.driver_id === currentUserId;
+              return (
+                <Card key={offer.id}>
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center text-teal-700 font-medium">
+                        {(offer.driver?.full_name || "?")[0].toUpperCase()}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-gray-900">
+                            {isMine ? "Your offer" : offer.driver?.full_name || "Unknown"}
+                          </p>
+                          {driverRating && (
+                            <DriverRatingBadge
+                              average={driverRating.average}
+                              count={driverRating.count}
+                            />
+                          )}
+                        </div>
+                        {offer.suggested_price && (
+                          <p className="text-xs text-gray-500">{offer.suggested_price}</p>
+                        )}
+                      </div>
+                    </div>
+                    <Badge className={offerStatus.color}>{offerStatus.label}</Badge>
+                  </div>
+
+                  {offer.message && (
+                    <p className="mt-2 text-sm text-gray-600">{offer.message}</p>
+                  )}
+
+                  <p className="mt-1 text-xs text-gray-400">
+                    {formatRelativeTime(offer.created_at)}
+                  </p>
+
+                  {isRider && offer.status === "pending" && ride.status === "open" && (
+                    <div className="mt-3 flex flex-wrap gap-2 items-center">
+                      <Button size="sm" onClick={() => run(`accept-${offer.id}`, () => acceptOffer(offer.id, ride.id))} loading={loading === `accept-${offer.id}`}>
+                        Accept
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => run(`decline-${offer.id}`, () => declineOffer(offer.id, ride.id))}
+                        loading={loading === `decline-${offer.id}`}
+                      >
+                        Decline
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => handleMessage(offer.driver_id)}>
+                        Message
+                      </Button>
+                      <ReportDialog
+                        reportedUserId={offer.driver_id}
+                        reportedUserName={offer.driver?.full_name}
+                        rideRequestId={ride.id}
+                        triggerLabel="Report"
+                        triggerClassName="text-xs text-gray-400 hover:text-red-600 ml-auto"
+                      />
+                    </div>
+                  )}
+
+                  {isMine && offer.status === "pending" && (
+                    <div className="mt-3 flex gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => handleMessage(currentUserId)}>
+                        Message Rider
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        loading={loading === "withdraw"}
+                        onClick={() => run("withdraw", () => withdrawOffer(offer.id, ride.id))}
+                      >
+                        Withdraw offer
+                      </Button>
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Offers */}
-      <div>
-        <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
-          Offers ({offers.length})
-        </h3>
-
-        {offers.length === 0 && (
-          <Card>
-            <p className="text-sm text-gray-500 text-center py-4">
-              No offers yet.
-            </p>
-          </Card>
-        )}
-
-        <div className="space-y-3">
-          {offers.map((offer) => {
-            const offerStatus = OFFER_STATUSES[offer.status as keyof typeof OFFER_STATUSES];
-            const driverRating = driverRatings[offer.driver_id];
-            return (
-              <Card key={offer.id}>
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center text-teal-700 font-medium">
-                      {(offer.driver?.full_name || "?")[0].toUpperCase()}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium text-gray-900">
-                          {offer.driver?.full_name || "Unknown"}
-                        </p>
-                        {driverRating && (
-                          <DriverRatingBadge
-                            average={driverRating.average}
-                            count={driverRating.count}
-                          />
-                        )}
-                      </div>
-                      {offer.suggested_price && (
-                        <p className="text-xs text-gray-500">{offer.suggested_price}</p>
-                      )}
-                    </div>
-                  </div>
-                  <Badge className={offerStatus.color}>{offerStatus.label}</Badge>
-                </div>
-
-                {offer.message && (
-                  <p className="mt-2 text-sm text-gray-600">{offer.message}</p>
-                )}
-
-                <p className="mt-1 text-xs text-gray-400">
-                  {formatRelativeTime(offer.created_at)}
-                </p>
-
-                {isRider && offer.status === "pending" && ride.status === "open" && (
-                  <div className="mt-3 flex gap-2">
-                    <Button size="sm" onClick={() => handleAcceptOffer(offer.id)} loading={loading}>
-                      Accept
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => handleDeclineOffer(offer.id)}
-                      loading={loading}
-                    >
-                      Decline
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleMessage(offer.driver_id)}
-                    >
-                      Message
-                    </Button>
-                  </div>
-                )}
-
-                {!isRider && offer.driver_id === currentUserId && offer.status === "accepted" && (
-                  <div className="mt-3">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleMessage(currentUserId)}
-                    >
-                      Message Rider
-                    </Button>
-                  </div>
-                )}
-              </Card>
-            );
-          })}
-        </div>
-      </div>
-
       {/* Make Offer (for drivers) */}
-      {!isRider && ride.status === "open" && !existingOffer && (
+      {!isRider && ride.status === "open" && !existingOffer && !riderBlocked && (
         <div>
           {!showOfferForm ? (
             <Button className="w-full" onClick={() => setShowOfferForm(true)}>
@@ -439,6 +741,7 @@ export function RideDetailClient({
                   name="suggested_price"
                   label="Suggested price (optional)"
                   placeholder='e.g. "Free", "$5", "Gas money"'
+                  maxLength={100}
                 />
                 <Textarea
                   id="message"
@@ -446,9 +749,10 @@ export function RideDetailClient({
                   label="Message (optional)"
                   placeholder="Add a note for the rider..."
                   rows={2}
+                  maxLength={1000}
                 />
                 <div className="flex gap-2">
-                  <Button type="submit" loading={loading}>
+                  <Button type="submit" loading={loading === "offer"}>
                     Send Offer
                   </Button>
                   <Button
@@ -465,12 +769,29 @@ export function RideDetailClient({
         </div>
       )}
 
-      {existingOffer && existingOffer.status === "pending" && (
-        <Card>
-          <p className="text-sm text-gray-500 text-center">
-            You&apos;ve already submitted an offer for this ride.
-          </p>
-        </Card>
+      {/* Drivers viewing someone else's request */}
+      {!isRider && !isMatchedDriver && (
+        <div className="flex justify-center gap-6 pt-2">
+          <ReportDialog
+            reportedUserId={ride.rider_id}
+            reportedUserName={ride.rider?.full_name}
+            rideRequestId={ride.id}
+            triggerLabel="Report this request"
+            triggerClassName="text-xs text-gray-400 hover:text-red-600"
+          />
+          <button
+            className="text-xs text-gray-400 hover:text-red-600"
+            onClick={() =>
+              run(
+                "block",
+                () => (riderBlocked ? unblockUser(ride.rider_id) : blockUser(ride.rider_id)),
+                riderBlocked ? "Unblocked." : "Blocked. You won't see each other's rides or messages."
+              )
+            }
+          >
+            {riderBlocked ? "Unblock" : "Block"} {ride.rider?.full_name?.split(" ")[0] || "rider"}
+          </button>
+        </div>
       )}
     </div>
   );

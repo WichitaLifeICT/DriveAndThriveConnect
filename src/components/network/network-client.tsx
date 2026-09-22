@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { sendFriendRequest, acceptConnection, declineConnection } from "@/actions/connections";
+import { useRouter } from "next/navigation";
+import { sendFriendRequest, acceptConnection, declineConnection, removeConnection } from "@/actions/connections";
+import { blockUser, unblockUser } from "@/actions/safety";
+import { ReportDialog } from "@/components/safety/report-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -25,11 +28,17 @@ interface PendingRequest {
   created_at: string;
 }
 
+interface BlockedUser {
+  blocked_id: string;
+  blocked: { id: string; full_name: string | null } | null;
+}
+
 interface NetworkClientProps {
   connections: ConnectionUser[];
   pendingRequests: PendingRequest[];
   friendCode: string;
   inviteToken: string;
+  blocks: BlockedUser[];
 }
 
 export function NetworkClient({
@@ -37,7 +46,30 @@ export function NetworkClient({
   pendingRequests,
   friendCode,
   inviteToken,
+  blocks,
 }: NetworkClientProps) {
+  const router = useRouter();
+  const [manageId, setManageId] = useState<string | null>(null);
+
+  async function handleRemove(connectionId: string) {
+    const result = await removeConnection(connectionId);
+    if (result?.error) setError(result.error);
+    setManageId(null);
+    router.refresh();
+  }
+
+  async function handleBlock(userId: string) {
+    const result = await blockUser(userId);
+    if (result?.error) setError(result.error);
+    setManageId(null);
+    router.refresh();
+  }
+
+  async function handleUnblock(userId: string) {
+    const result = await unblockUser(userId);
+    if (result?.error) setError(result.error);
+    router.refresh();
+  }
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -189,18 +221,59 @@ export function NetworkClient({
                   <div className="w-10 h-10 bg-teal-100 rounded-full flex items-center justify-center text-teal-700 font-medium">
                     {(conn.full_name || "?")[0].toUpperCase()}
                   </div>
-                  <div>
+                  <div className="flex-1">
                     <p className="text-sm font-medium text-gray-900">
                       {conn.full_name || "Unknown"}
                     </p>
                     <p className="text-xs text-gray-500 capitalize">{conn.role}</p>
                   </div>
+                  <button
+                    className="text-xs text-gray-400 hover:text-gray-700"
+                    onClick={() => setManageId(manageId === conn.connectionId ? null : conn.connectionId)}
+                  >
+                    {manageId === conn.connectionId ? "Close" : "Manage"}
+                  </button>
                 </div>
+                {manageId === conn.connectionId && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 flex flex-wrap items-center gap-4">
+                    <button className="text-sm text-gray-600 hover:text-gray-900" onClick={() => handleRemove(conn.connectionId)}>
+                      Remove connection
+                    </button>
+                    <button className="text-sm text-red-600 hover:text-red-700" onClick={() => handleBlock(conn.id)}>
+                      Block
+                    </button>
+                    <ReportDialog reportedUserId={conn.id} reportedUserName={conn.full_name} triggerLabel="Report" />
+                  </div>
+                )}
               </Card>
             ))}
           </div>
         )}
       </div>
+
+      {/* Blocked people */}
+      {blocks.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
+            Blocked ({blocks.length})
+          </h3>
+          <Card>
+            <div className="space-y-2">
+              {blocks.map((b) => (
+                <div key={b.blocked_id} className="flex items-center justify-between">
+                  <span className="text-sm text-gray-700">{b.blocked?.full_name || "Unknown"}</span>
+                  <button className="text-xs text-teal-600 hover:text-teal-700" onClick={() => handleUnblock(b.blocked_id)}>
+                    Unblock
+                  </button>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-3">
+              Blocked people can&apos;t see your rides, message you, or send you connection requests.
+            </p>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }

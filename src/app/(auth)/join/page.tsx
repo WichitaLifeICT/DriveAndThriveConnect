@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { SignupForm } from "@/components/auth/signup-form";
+import { getActiveOrganizations } from "@/actions/organizations";
 
 export default async function JoinPage({
   searchParams,
@@ -32,8 +33,11 @@ export default async function JoinPage({
     );
   }
 
+  const organizations = await getActiveOrganizations();
+
   return (
     <SignupForm
+      organizations={organizations}
       inviteToken={invite}
       inviterName={inviter.full_name || "A community member"}
     />

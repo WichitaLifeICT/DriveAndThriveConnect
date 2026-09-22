@@ -1,4 +1,4 @@
-import { getMyRideRequests, getDashboardStats, getPopularRoutes } from "@/actions/rides";
+import { getMyRideRequests, getDashboardStats, getPopularRoutes, getMyDrives } from "@/actions/rides";
 import { getProfile } from "@/actions/profile";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -7,18 +7,19 @@ import { formatRideDate, formatRideTime } from "@/lib/utils/format";
 import Link from "next/link";
 
 export default async function DashboardPage() {
-  const [rides, profile, stats, popularRoutes] = await Promise.all([
+  const [rides, profile, stats, popularRoutes, drives] = await Promise.all([
     getMyRideRequests(),
     getProfile(),
     getDashboardStats(),
     getPopularRoutes(),
+    getMyDrives(),
   ]);
 
   const activeRides = rides.filter(
     (r) => r.status === "open" || r.status === "matched"
   );
   const pastRides = rides.filter(
-    (r) => r.status === "completed" || r.status === "cancelled"
+    (r) => r.status === "completed" || r.status === "cancelled" || r.status === "expired"
   );
 
   return (
@@ -77,6 +78,30 @@ export default async function DashboardPage() {
           </Card>
         </Link>
       </div>
+
+      {/* Rides this user is driving */}
+      {drives.length > 0 && (
+        <div>
+          <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wider mb-3">
+            You&apos;re Driving ({drives.length})
+          </h3>
+          <div className="space-y-2">
+            {drives.map((d) => (
+              <Link key={d.id} href={`/rides/${d.id}`}>
+                <Card className="hover:border-teal-300 transition-colors cursor-pointer mb-2">
+                  <p className="text-sm font-medium text-gray-900">
+                    {formatRideDate(d.ride_date)} at {formatRideTime(d.ride_time)}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {(d.rider as unknown as { full_name: string | null } | null)?.full_name || "Rider"} ·{" "}
+                    {d.pickup_address.split(",")[0]} → {d.dropoff_address.split(",")[0]}
+                  </p>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Popular Routes */}
       {(popularRoutes.routes.length > 0 || popularRoutes.topPickups.length > 0) && (

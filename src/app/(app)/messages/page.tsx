@@ -33,7 +33,7 @@ export default async function MessagesPage() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm font-medium text-gray-900 truncate">
+                      <p className={`text-sm text-gray-900 truncate ${thread.unreadCount > 0 ? "font-semibold" : "font-medium"}`}>
                         {thread.otherUser?.full_name || "Unknown"}
                       </p>
                       {thread.lastMessage && (
@@ -43,9 +43,16 @@ export default async function MessagesPage() {
                       )}
                     </div>
                     {thread.lastMessage ? (
-                      <p className="text-sm text-gray-500 truncate">
-                        {thread.lastMessage.content}
-                      </p>
+                      <div className="flex items-center gap-2">
+                        <p className={`text-sm truncate flex-1 ${thread.unreadCount > 0 ? "text-gray-900 font-medium" : "text-gray-500"}`}>
+                          {thread.lastMessage.content}
+                        </p>
+                        {thread.unreadCount > 0 && (
+                          <span className="shrink-0 min-w-[20px] h-5 px-1.5 rounded-full bg-teal-600 text-white text-xs font-semibold flex items-center justify-center">
+                            {thread.unreadCount}
+                          </span>
+                        )}
+                      </div>
                     ) : (
                       <p className="text-sm text-gray-400 italic">No messages yet</p>
                     )}

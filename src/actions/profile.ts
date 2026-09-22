@@ -1,14 +1,14 @@
 "use server";
 
-import { createServerClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireUser } from "@/lib/auth";
+import { setMembershipsForUser } from "@/lib/memberships";
+import { normalizeUsPhone } from "@/lib/phone";
+import { notifyAdmins } from "@/lib/notify";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 
 export async function getProfile() {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  const { user } = await requireUser();
 
   // Private columns (email, invite token, ...) are only readable with the
   // service role, so read the signed-in user's own row through it.
@@ -23,23 +23,30 @@ export async function getProfile() {
 }
 
 export async function updateProfile(formData: FormData) {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  const { user } = await requireUser();
 
   const role = formData.get("role") as "rider" | "driver";
   if (role !== "rider" && role !== "driver") {
     return { error: "Invalid role." };
   }
 
-  const selectedOrgsRaw = (formData.get("organization") as string) || "";
-  const selectedOrgs = selectedOrgsRaw
+  const fullName = ((formData.get("full_name") as string) || "").trim();
+  if (!fullName || fullName.length > 100) return { error: "Please enter your name (up to 100 characters)." };
+
+  let phone: string | null;
+  let emergencyPhone: string | null;
+  try {
+    phone = normalizeUsPhone(formData.get("phone") as string);
+    emergencyPhone = normalizeUsPhone(formData.get("emergency_contact_phone") as string);
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+  const emergencyName = ((formData.get("emergency_contact_name") as string) || "").trim().slice(0, 100) || null;
+
+  const organizationIds = ((formData.get("organization_ids") as string) || "")
     .split(",")
     .map((o) => o.trim())
     .filter(Boolean);
-
-  let organization: string | null = null;
-  let pending_organizations: string | null = null;
 
   const admin = createAdminClient();
 
@@ -52,43 +59,29 @@ export async function updateProfile(formData: FormData) {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (role === "driver" || vetting) {
-    // Get current approved orgs to preserve them
-    const { data: current } = await admin
-      .from("users")
-      .select("organization, pending_organizations")
-      .eq("id", user.id)
-      .single();
-
-    const currentApproved = (current?.organization || "")
-      .split(",")
-      .map((o: string) => o.trim())
-      .filter(Boolean);
-
-    // Keep approved orgs that are still selected
-    const keepApproved = currentApproved.filter((o: string) => selectedOrgs.includes(o));
-    // New orgs (not already approved) go to pending
-    const newPending = selectedOrgs.filter((o) => !currentApproved.includes(o));
-
-    organization = keepApproved.length > 0 ? keepApproved.join(",") : null;
-    pending_organizations = newPending.length > 0 ? newPending.join(",") : null;
-  } else {
-    // Riders: orgs are immediate, no pending
-    organization = selectedOrgs.length > 0 ? selectedOrgs.join(",") : null;
+  const needsApproval = role === "driver" || !!vetting;
+  const { added } = await setMembershipsForUser(user.id, organizationIds, needsApproval);
+  if (needsApproval && added > 0) {
+    await notifyAdmins({
+      type: "org_requested",
+      title: `${fullName} asked to join ${added === 1 ? "an organization" : `${added} organizations`}`,
+      body: "Review it on the Organizations page.",
+      link: "/admin/organizations",
+      skipEmail: true,
+    });
   }
 
-  // Organization fields aren't user-writable at the database level, so
-  // write through the service role, scoped to the signed-in user.
   const { error } = await admin
     .from("users")
     .update({
-      full_name: formData.get("full_name") as string,
-      phone: (formData.get("phone") as string) || null,
-      avatar_url: (formData.get("avatar_url") as string) || null,
+      full_name: fullName,
+      phone,
+      avatar_url: ((formData.get("avatar_url") as string) || "").trim() || null,
       role,
-      organization,
-      pending_organizations,
       notify_email: formData.get("notify_email") === "on",
+      share_phone_when_matched: formData.get("share_phone_when_matched") === "on",
+      emergency_contact_name: emergencyName,
+      emergency_contact_phone: emergencyPhone,
       updated_at: new Date().toISOString(),
     })
     .eq("id", user.id);

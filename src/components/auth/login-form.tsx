@@ -7,8 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import Link from "next/link";
 
-export function LoginForm() {
-  const [error, setError] = useState<string | null>(null);
+export function LoginForm({ initialError }: { initialError?: string | null }) {
+  const [error, setError] = useState<string | null>(initialError || null);
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(formData: FormData) {
@@ -58,6 +58,11 @@ export function LoginForm() {
           placeholder="Your password"
           required
         />
+        <div className="text-right -mt-2">
+          <Link href="/forgot-password" className="text-sm text-teal-600 hover:text-teal-500">
+            Forgot password?
+          </Link>
+        </div>
         <Button type="submit" className="w-full" loading={loading}>
           Log in
         </Button>

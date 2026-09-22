@@ -1,5 +1,6 @@
 import { getProfile } from "@/actions/profile";
-import { getMyVettingStatus } from "@/actions/admin";
+import { getMyVettingStatus } from "@/actions/vetting";
+import { getActiveOrganizations, getMyOrganizations } from "@/actions/organizations";
 import { ProfileForm } from "@/components/profile/profile-form";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,27 +13,31 @@ export default async function ProfilePage() {
     return <div>Profile not found.</div>;
   }
 
-  const vettingStatus = await getMyVettingStatus();
+  const [vettingStatus, organizations, memberships] = await Promise.all([
+    getMyVettingStatus(),
+    getActiveOrganizations(),
+    getMyOrganizations(),
+  ]);
   const role = profile.role;
   const showVetting = role === "driver";
 
   return (
     <div className="space-y-6">
       <h2 className="text-xl font-semibold text-gray-900">Your Profile</h2>
-      <ProfileForm profile={profile} />
+      <ProfileForm profile={profile} organizations={organizations} memberships={memberships} />
 
       {/* Vetting section for drivers */}
       {showVetting && (
         <Card padding="lg">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-medium text-gray-900">Community Vetted Driver</h3>
+              <h3 className="font-medium text-gray-900">Approved Driver</h3>
               <p className="text-sm text-gray-500 mt-0.5">
-                Get verified to see community-wide ride requests.
+                Upload your license and insurance to see organization and community ride requests.
               </p>
             </div>
             {vettingStatus ? (
-              <Badge
+              <Link href="/vetting"><Badge
                 className={
                   vettingStatus.status === "approved"
                     ? "bg-green-100 text-green-800"
@@ -42,7 +47,7 @@ export default async function ProfilePage() {
                 }
               >
                 {vettingStatus.status.charAt(0).toUpperCase() + vettingStatus.status.slice(1)}
-              </Badge>
+              </Badge></Link>
             ) : (
               <Link
                 href="/vetting"
