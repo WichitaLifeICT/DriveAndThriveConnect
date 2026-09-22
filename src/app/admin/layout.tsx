@@ -1,4 +1,5 @@
 import { createServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
@@ -14,7 +15,7 @@ export default async function AdminLayout({
 
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
+  const { data: profile } = await createAdminClient()
     .from("users")
     .select("is_admin")
     .eq("id", user.id)

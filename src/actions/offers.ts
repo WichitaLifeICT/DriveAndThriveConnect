@@ -51,13 +51,30 @@ export async function acceptOffer(offerId: string, rideRequestId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  // Only the rider can accept, and only a pending offer on this open ride
+  const { data: ride } = await supabase
+    .from("ride_requests")
+    .select("id, status")
+    .eq("id", rideRequestId)
+    .eq("rider_id", user.id)
+    .single();
+
+  if (!ride) return { error: "Ride not found." };
+  if (ride.status !== "open") return { error: "This ride is no longer open." };
+
   // Accept the offer
-  const { error: offerError } = await supabase
+  const { data: accepted, error: offerError } = await supabase
     .from("ride_offers")
     .update({ status: "accepted", updated_at: new Date().toISOString() })
-    .eq("id", offerId);
+    .eq("id", offerId)
+    .eq("ride_request_id", rideRequestId)
+    .eq("status", "pending")
+    .select("id");
 
   if (offerError) return { error: offerError.message };
+  if (!accepted || accepted.length === 0) {
+    return { error: "This offer is no longer available." };
+  }
 
   // Update ride status to matched
   const { error: rideError } = await supabase
@@ -90,10 +107,22 @@ export async function declineOffer(offerId: string, rideRequestId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  // Only the rider of this ride can decline its offers
+  const { data: ride } = await supabase
+    .from("ride_requests")
+    .select("id")
+    .eq("id", rideRequestId)
+    .eq("rider_id", user.id)
+    .single();
+
+  if (!ride) return { error: "Ride not found." };
+
   const { error } = await supabase
     .from("ride_offers")
     .update({ status: "declined", updated_at: new Date().toISOString() })
-    .eq("id", offerId);
+    .eq("id", offerId)
+    .eq("ride_request_id", rideRequestId)
+    .eq("status", "pending");
 
   if (error) return { error: error.message };
 
@@ -110,7 +139,8 @@ export async function withdrawOffer(offerId: string, rideRequestId: string) {
     .from("ride_offers")
     .update({ status: "withdrawn", updated_at: new Date().toISOString() })
     .eq("id", offerId)
-    .eq("driver_id", user.id);
+    .eq("driver_id", user.id)
+    .eq("status", "pending");
 
   if (error) return { error: error.message };
 

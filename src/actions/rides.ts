@@ -101,67 +101,10 @@ export async function getEligibleRideRequests() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // Get direct connections
-  const { data: directData } = await supabase.rpc("get_connections", {
-    p_user_id: user.id,
-  });
-  const directIds: string[] = directData || [];
-
-  // Check if user is a vetted driver and get their scope
-  const { data: vettedStatus } = await supabase
-    .from("vetted_driver_status")
-    .select("status, driver_scope")
-    .eq("user_id", user.id)
-    .single();
-  const isVetted = vettedStatus?.status === "approved";
-  const driverScope = vettedStatus?.driver_scope as string | null;
-
-  // Get current user's organizations for org-tier matching
-  const { data: userProfile } = await supabase
-    .from("users")
-    .select("organization")
-    .eq("id", user.id)
-    .single();
-  const userOrg = userProfile?.organization;
-  const userOrgs = userOrg?.split(",").filter((o: string) => o && o !== "none") || [];
-
-  // Find riders sharing any organization (only if vetted, has orgs, and scope allows it)
-  let sameOrgRiderIds: string[] = [];
-  const scopeAllowsOrg = driverScope === "organization" || driverScope === "any";
-  if (isVetted && scopeAllowsOrg && userOrgs.length > 0) {
-    // Build OR filter: organization contains any of the driver's orgs
-    const orgFilters = userOrgs.map((o: string) => `organization.ilike.%${o}%`).join(",");
-    const { data: orgUsers } = await supabase
-      .from("users")
-      .select("id")
-      .or(orgFilters)
-      .neq("id", user.id);
-    sameOrgRiderIds = (orgUsers || []).map((u) => u.id);
-  }
-
-  // Build OR conditions based on driver scope
-  const orConditions: string[] = [];
-
-  // Circle rides from direct connections — always allowed regardless of scope
-  if (directIds.length > 0) {
-    orConditions.push(
-      `and(visibility.eq.circle,rider_id.in.(${directIds.join(",")}))`
-    );
-  }
-  // Organization rides — only if vetted and scope includes organization
-  if (sameOrgRiderIds.length > 0) {
-    orConditions.push(
-      `and(visibility.eq.organization,rider_id.in.(${sameOrgRiderIds.join(",")}))`
-    );
-  }
-  // Community rides — only if vetted and scope includes community
-  const scopeAllowsCommunity = driverScope === "community" || driverScope === "any";
-  if (isVetted && scopeAllowsCommunity) {
-    orConditions.push("visibility.eq.community");
-  }
-
-  if (orConditions.length === 0) return [];
-
+  // Visibility (circle / organization / community, plus the driver's
+  // vetting scope) is enforced by the ride_requests RLS policy via
+  // can_see_ride_request(), so every row returned here is one this user
+  // is allowed to see.
   const { data } = await supabase
     .from("ride_requests")
     .select(`
@@ -170,7 +113,6 @@ export async function getEligibleRideRequests() {
     `)
     .eq("status", "open")
     .neq("rider_id", user.id)
-    .or(orConditions.join(","))
     .order("ride_date", { ascending: true })
     .order("ride_time", { ascending: true });
 
@@ -223,12 +165,21 @@ export async function getDashboardStats() {
   return { total, completed, matched, cancelled, open, completionRate };
 }
 
+// Every user sees these stats, so only surface places requested by at
+// least this many different riders — otherwise one rider's home address
+// would show up as a "popular" pickup.
+const MIN_DISTINCT_RIDERS = 3;
+
 export async function getPopularRoutes() {
+  const supabase = await createServerClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
   const admin = createAdminClient();
 
   const { data: rides } = await admin
     .from("ride_requests")
-    .select("pickup_address, dropoff_address");
+    .select("pickup_address, dropoff_address, rider_id");
 
   if (!rides || rides.length === 0) {
     return { routes: [], topPickups: [], topDropoffs: [] };
@@ -238,6 +189,9 @@ export async function getPopularRoutes() {
   const routeCounts: Record<string, { pickup: string; dropoff: string; count: number }> = {};
   const pickupCounts: Record<string, number> = {};
   const dropoffCounts: Record<string, number> = {};
+  const routeRiders: Record<string, Set<string>> = {};
+  const pickupRiders: Record<string, Set<string>> = {};
+  const dropoffRiders: Record<string, Set<string>> = {};
 
   for (const ride of rides) {
     // Use first part of address (before comma) for cleaner grouping
@@ -252,18 +206,26 @@ export async function getPopularRoutes() {
 
     pickupCounts[pickupShort] = (pickupCounts[pickupShort] || 0) + 1;
     dropoffCounts[dropoffShort] = (dropoffCounts[dropoffShort] || 0) + 1;
+
+    (routeRiders[routeKey] ??= new Set()).add(ride.rider_id);
+    (pickupRiders[pickupShort] ??= new Set()).add(ride.rider_id);
+    (dropoffRiders[dropoffShort] ??= new Set()).add(ride.rider_id);
   }
 
-  const routes = Object.values(routeCounts)
+  const routes = Object.entries(routeCounts)
+    .filter(([key]) => routeRiders[key].size >= MIN_DISTINCT_RIDERS)
+    .map(([, route]) => route)
     .sort((a, b) => b.count - a.count)
     .slice(0, 5);
 
   const topPickups = Object.entries(pickupCounts)
+    .filter(([address]) => pickupRiders[address].size >= MIN_DISTINCT_RIDERS)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5)
     .map(([address, count]) => ({ address, count }));
 
   const topDropoffs = Object.entries(dropoffCounts)
+    .filter(([address]) => dropoffRiders[address].size >= MIN_DISTINCT_RIDERS)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 5)
     .map(([address, count]) => ({ address, count }));

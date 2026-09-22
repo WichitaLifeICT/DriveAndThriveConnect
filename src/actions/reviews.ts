@@ -22,13 +22,28 @@ export async function submitReview(
   // Verify this ride exists and is completed
   const { data: ride } = await supabase
     .from("ride_requests")
-    .select("id, rider_id, status")
+    .select("id, rider_id, status, matched_offer_id")
     .eq("id", rideRequestId)
     .single();
 
   if (!ride) return { error: "Ride not found." };
   if (ride.status !== "completed") return { error: "You can only review completed rides." };
   if (ride.rider_id !== user.id) return { error: "Only the rider can leave a review." };
+
+  // Reviews can only be for the driver whose offer was accepted
+  const { data: matchedOffer } = ride.matched_offer_id
+    ? await supabase
+        .from("ride_offers")
+        .select("driver_id")
+        .eq("id", ride.matched_offer_id)
+        .eq("ride_request_id", rideRequestId)
+        .eq("status", "accepted")
+        .maybeSingle()
+    : { data: null };
+
+  if (!matchedOffer || matchedOffer.driver_id !== driverId) {
+    return { error: "You can only review the driver who gave this ride." };
+  }
 
   const { error } = await supabase.from("driver_reviews").insert({
     ride_request_id: rideRequestId,

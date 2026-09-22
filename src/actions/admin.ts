@@ -11,9 +11,9 @@ async function requireAdmin() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: profile } = await supabase
+  const { data: profile } = await createAdminClient()
     .from("users")
-    .select("*")
+    .select("is_admin")
     .eq("id", user.id)
     .single();
 

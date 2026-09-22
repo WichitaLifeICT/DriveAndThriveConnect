@@ -1,4 +1,4 @@
-import { createServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { SignupForm } from "@/components/auth/signup-form";
 
 export default async function JoinPage({
@@ -16,10 +16,11 @@ export default async function JoinPage({
     );
   }
 
-  const supabase = await createServerClient();
-  const { data: inviter } = await supabase
+  // Invite tokens aren't readable by other users, so resolve server-side
+  const admin = createAdminClient();
+  const { data: inviter } = await admin
     .from("users")
-    .select("id, full_name, avatar_url")
+    .select("full_name")
     .eq("invite_token", invite)
     .single();
 
@@ -33,7 +34,7 @@ export default async function JoinPage({
 
   return (
     <SignupForm
-      invitedBy={inviter.id}
+      inviteToken={invite}
       inviterName={inviter.full_name || "A community member"}
     />
   );

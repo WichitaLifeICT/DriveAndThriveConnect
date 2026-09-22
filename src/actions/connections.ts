@@ -1,6 +1,7 @@
 "use server";
 
 import { createServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -9,8 +10,8 @@ export async function sendFriendRequest(friendCode: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  // Look up user by friend code
-  const { data: target } = await supabase
+  // Look up user by friend code (not readable by other users directly)
+  const { data: target } = await createAdminClient()
     .from("users")
     .select("id, full_name")
     .eq("friend_code", friendCode.toUpperCase().trim())

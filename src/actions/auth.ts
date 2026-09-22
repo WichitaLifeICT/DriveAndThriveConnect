@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 
 export async function signUpWithEmail(formData: FormData) {
   const supabase = await createServerClient();
-  const invitedBy = formData.get("invited_by") as string | null;
+  const inviteToken = formData.get("invite_token") as string | null;
 
   const organization = formData.get("organization") as string | null;
   const phone = formData.get("phone") as string | null;
@@ -18,7 +18,7 @@ export async function signUpWithEmail(formData: FormData) {
     options: {
       data: {
         full_name: formData.get("full_name") as string,
-        invited_by: invitedBy || undefined,
+        invite_token: inviteToken || undefined,
         organization: organization || undefined,
         phone: phone || undefined,
       },
@@ -64,15 +64,15 @@ export async function signInWithEmail(formData: FormData) {
   redirect("/dashboard");
 }
 
-export async function signInWithGoogle(invitedBy?: string, organization?: string) {
+export async function signInWithGoogle(inviteToken?: string, organization?: string) {
   const supabase = await createServerClient();
 
   const redirectUrl = new URL(
     "/auth/callback",
     process.env.NEXT_PUBLIC_APP_URL!
   );
-  if (invitedBy) {
-    redirectUrl.searchParams.set("invited_by", invitedBy);
+  if (inviteToken) {
+    redirectUrl.searchParams.set("invite", inviteToken);
   }
   if (organization) {
     redirectUrl.searchParams.set("organization", organization);

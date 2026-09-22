@@ -1,5 +1,9 @@
 -- ============================================================
 -- RideConnectICT Trigger Fix v2
+--
+-- SUPERSEDED — do not run. migrations/00009_security_hardening.sql
+-- defines the current handle_new_user(). Re-running this script would
+-- reinstate the insecure `invited_by` auto-connect.
 -- Run this entire script in Supabase SQL Editor
 -- ============================================================
 

@@ -20,6 +20,22 @@ export async function getOrCreateThread(rideRequestId: string, driverId: string)
 
   const riderId = ride.rider_id;
 
+  // Threads are only between the rider and a driver: the driver can open
+  // one on a ride they can see, the rider only with a driver who offered.
+  if (user.id !== riderId && user.id !== driverId) {
+    return { error: "You can't message on this ride." };
+  }
+  if (driverId === riderId) return { error: "Invalid driver." };
+  if (user.id === riderId) {
+    const { data: offer } = await supabase
+      .from("ride_offers")
+      .select("id")
+      .eq("ride_request_id", rideRequestId)
+      .eq("driver_id", driverId)
+      .maybeSingle();
+    if (!offer) return { error: "This driver hasn't offered on your ride." };
+  }
+
   // Check for existing thread
   const { data: existing } = await supabase
     .from("message_threads")
@@ -27,7 +43,7 @@ export async function getOrCreateThread(rideRequestId: string, driverId: string)
     .eq("ride_request_id", rideRequestId)
     .eq("rider_id", riderId)
     .eq("driver_id", driverId)
-    .single();
+    .maybeSingle();
 
   if (existing) return { threadId: existing.id };
 
@@ -52,10 +68,14 @@ export async function sendMessage(threadId: string, content: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  const trimmed = content.trim();
+  if (!trimmed) return { error: "Message can't be empty." };
+  if (trimmed.length > 2000) return { error: "Message is too long." };
+
   const { error } = await supabase.from("messages").insert({
     thread_id: threadId,
     sender_id: user.id,
-    content: content.trim(),
+    content: trimmed,
   });
 
   if (error) return { error: error.message };

@@ -5,7 +5,6 @@ import { suspendUser, adminConnectUsers, adminUpdateUserOrg, toggleAdmin, adminC
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatDateTime } from "@/lib/utils/format";
 import { ORGANIZATIONS } from "@/lib/constants";
 import { useRouter } from "next/navigation";
 import type { User } from "@/types/database";

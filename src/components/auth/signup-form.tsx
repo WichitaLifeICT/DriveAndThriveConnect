@@ -9,11 +9,11 @@ import { DISCLAIMER_TEXT, ORGANIZATIONS } from "@/lib/constants";
 import Link from "next/link";
 
 interface SignupFormProps {
-  invitedBy?: string;
+  inviteToken?: string;
   inviterName?: string;
 }
 
-export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
+export function SignupForm({ inviteToken, inviterName }: SignupFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
@@ -48,8 +48,8 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
     }
     setLoading(true);
     setError(null);
-    if (invitedBy) {
-      formData.set("invited_by", invitedBy);
+    if (inviteToken) {
+      formData.set("invite_token", inviteToken);
     }
     formData.set("organization", orgVal);
     const result = await signUpWithEmail(formData);
@@ -71,7 +71,7 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
     }
     setLoading(true);
     setError(null);
-    const result = await signInWithGoogle(invitedBy, orgVal);
+    const result = await signInWithGoogle(inviteToken, orgVal);
     if (result?.error) {
       setError(result.error);
       setLoading(false);

@@ -52,10 +52,7 @@ export async function notifyEligibleDrivers(
     }
   } else if (ride.visibility === "organization") {
     // Notify vetted drivers in the same org(s) with org or any scope
-    const riderOrgs =
-      rider?.organization
-        ?.split(",")
-        .filter((o: string) => o && o !== "none") || [];
+    const riderOrgs = parseOrgs(rider?.organization);
     if (riderOrgs.length > 0) {
       // Get vetted drivers with org or any scope
       const { data: vettedDrivers } = await admin
@@ -66,18 +63,17 @@ export async function notifyEligibleDrivers(
       const vettedIds = (vettedDrivers || []).map((v) => v.user_id);
 
       if (vettedIds.length > 0) {
-        // Filter to those sharing an org
-        const orgFilters = riderOrgs
-          .map((o: string) => `organization.ilike.%${o}%`)
-          .join(",");
-        const { data: orgDrivers } = await admin
+        // Filter to those sharing an org (exact match — a substring match
+        // would let one org name match another)
+        const { data: candidates } = await admin
           .from("users")
-          .select("id")
+          .select("id, organization")
           .in("id", vettedIds)
           .eq("role", "driver")
-          .or(orgFilters)
           .neq("id", riderId);
-        driverIds = (orgDrivers || []).map((d) => d.id);
+        driverIds = (candidates || [])
+          .filter((d) => parseOrgs(d.organization).some((o) => riderOrgs.includes(o)))
+          .map((d) => d.id);
       }
     }
 
@@ -147,6 +143,12 @@ export async function notifyEligibleDrivers(
   const timeStr = formatTime(ride.rideTime);
   const returnStr = ride.isRoundTrip && ride.returnTime ? formatTime(ride.returnTime) : null;
 
+  // Everything below is user-entered, so escape it before putting it in HTML
+  const riderName = escapeHtml(ride.riderName);
+  const pickupAddress = escapeHtml(ride.pickupAddress);
+  const dropoffAddress = escapeHtml(ride.dropoffAddress);
+  const notes = ride.notes ? escapeHtml(ride.notes) : null;
+
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://drive-and-thrive-connect.vercel.app";
 
   // Send emails (batch for efficiency)
@@ -161,21 +163,21 @@ export async function notifyEligibleDrivers(
         </div>
         <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px;">
           <p style="color: #374151; font-size: 16px; margin-top: 0;">
-            Hi ${driver.full_name || "Driver"},
+            Hi ${escapeHtml(driver.full_name || "Driver")},
           </p>
           <p style="color: #374151; font-size: 16px;">
-            <strong>${ride.riderName}</strong> needs a ride!
+            <strong>${riderName}</strong> needs a ride!
           </p>
 
           <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin: 16px 0;">
             <table style="width: 100%; border-collapse: collapse;">
               <tr>
                 <td style="padding: 8px 0; color: #6b7280; font-size: 14px; width: 100px;">Pickup</td>
-                <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 500;">${ride.pickupAddress}</td>
+                <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 500;">${pickupAddress}</td>
               </tr>
               <tr>
                 <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Dropoff</td>
-                <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 500;">${ride.dropoffAddress}</td>
+                <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 500;">${dropoffAddress}</td>
               </tr>
               <tr>
                 <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Date</td>
@@ -191,16 +193,16 @@ export async function notifyEligibleDrivers(
                 <td style="padding: 8px 0; color: #111827; font-size: 14px; font-weight: 500;">Round trip${returnStr ? ` — return at ${returnStr}` : ""}</td>
               </tr>
               ` : ""}
-              ${ride.notes ? `
+              ${notes ? `
               <tr>
                 <td style="padding: 8px 0; color: #6b7280; font-size: 14px;">Notes</td>
-                <td style="padding: 8px 0; color: #111827; font-size: 14px;">${ride.notes}</td>
+                <td style="padding: 8px 0; color: #111827; font-size: 14px;">${notes}</td>
               </tr>
               ` : ""}
             </table>
           </div>
 
-          <a href="${appUrl}/rides/${ride.rideId}" style="display: inline-block; background: #0d9488; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 500; font-size: 14px;">
+          <a href="${appUrl}/rides/${encodeURIComponent(ride.rideId)}" style="display: inline-block; background: #0d9488; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 500; font-size: 14px;">
             View & Offer Ride
           </a>
 
@@ -218,6 +220,22 @@ export async function notifyEligibleDrivers(
   } catch (err) {
     console.error("Failed to send ride notification emails:", err);
   }
+}
+
+function parseOrgs(org: string | null | undefined): string[] {
+  return (org || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o) => o && o !== "none");
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function formatTime(time: string): string {
