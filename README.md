@@ -84,7 +84,7 @@ update public.users set is_admin = true where email = 'you@example.org';
 
 ### Scheduled jobs
 
-`/api/cron` (hourly, see `vercel.json`) expires stale rides, sends ride
+`/api/cron` (daily by default, see `vercel.json`; hourly recommended) expires stale rides, sends ride
 reminders and "did your ride happen?" prompts, and handles driver document
 expiry. It requires `CRON_SECRET`; see `WORK_QUEUE.md` for setup.
 

@@ -41,12 +41,15 @@ offer, reminder, cancellation, password-reset, or safety emails.
 
 ### 3. Turn on the scheduled jobs (reminders, ride expiry, license expiry)
 - [ ] In Vercel, add a `CRON_SECRET` environment variable (any long random
-      string) and redeploy. `vercel.json` schedules `/api/cron` hourly.
-- [ ] **If you're on Vercel's free Hobby plan**, cron jobs can only run once
-      a day, so "ride in a few hours" reminders would be late. Either upgrade
-      to Pro, or use a free external scheduler (e.g. cron-job.org) to call
-      `https://<your-app>/api/cron` hourly with the header
-      `Authorization: Bearer <CRON_SECRET>`.
+      string) and redeploy. `vercel.json` runs `/api/cron` once a day at
+      8 AM Wichita time (13:00 UTC), which works on every Vercel plan.
+- [ ] For timely "your ride is in a few hours" reminders, the job needs to
+      run **hourly**. Either:
+      - on Vercel **Pro**, change the schedule in `vercel.json` to
+        `"0 * * * *"`; or
+      - on the free plan, create a free job at cron-job.org that calls
+        `https://<your-app>/api/cron` every hour with the header
+        `Authorization: Bearer <CRON_SECRET>`.
 
 ### 4. Supabase auth settings
 - [ ] Authentication → URL Configuration: set **Site URL** to your production
