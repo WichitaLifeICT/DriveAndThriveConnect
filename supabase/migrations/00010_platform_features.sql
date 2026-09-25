@@ -8,6 +8,8 @@
 --   * Messaging: read tracking, admin messages
 --   * Rate limiting
 -- Requires 00009_security_hardening.sql.
+-- Safe to re-run: every step checks for or replaces what it creates, so a
+-- partially applied run can simply be run again.
 -- ============================================================
 
 BEGIN;
@@ -58,14 +60,17 @@ CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON public.user_blocks(blocked
 
 ALTER TABLE public.user_blocks ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view own blocks" ON public.user_blocks;
 CREATE POLICY "Users can view own blocks"
   ON public.user_blocks FOR SELECT TO authenticated
   USING (blocker_id = (SELECT auth.uid()));
 
+DROP POLICY IF EXISTS "Users can block" ON public.user_blocks;
 CREATE POLICY "Users can block"
   ON public.user_blocks FOR INSERT TO authenticated
   WITH CHECK (blocker_id = (SELECT auth.uid()));
 
+DROP POLICY IF EXISTS "Users can unblock" ON public.user_blocks;
 CREATE POLICY "Users can unblock"
   ON public.user_blocks FOR DELETE TO authenticated
   USING (blocker_id = (SELECT auth.uid()));
@@ -114,10 +119,12 @@ CREATE INDEX IF NOT EXISTS idx_reports_reported ON public.reports(reported_user_
 
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Reporters can view own reports" ON public.reports;
 CREATE POLICY "Reporters can view own reports"
   ON public.reports FOR SELECT TO authenticated
   USING (reporter_id = (SELECT auth.uid()));
 
+DROP POLICY IF EXISTS "Users can file reports" ON public.reports;
 CREATE POLICY "Users can file reports"
   ON public.reports FOR INSERT TO authenticated
   WITH CHECK (
@@ -194,10 +201,12 @@ CREATE INDEX IF NOT EXISTS idx_user_orgs_org ON public.user_organizations(organi
 ALTER TABLE public.organizations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_organizations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Anyone can list active organizations" ON public.organizations;
 CREATE POLICY "Anyone can list active organizations"
   ON public.organizations FOR SELECT TO anon, authenticated
   USING (is_active);
 
+DROP POLICY IF EXISTS "Users can view own memberships" ON public.user_organizations;
 CREATE POLICY "Users can view own memberships"
   ON public.user_organizations FOR SELECT TO authenticated
   USING (user_id = (SELECT auth.uid()));
@@ -213,7 +222,8 @@ ON CONFLICT (name) DO NOTHING;
 
 -- Carry over existing memberships from the comma-separated columns.
 -- "other: X" write-ins become inactive organizations an admin can review.
-CREATE TEMP TABLE tmp_org_memberships ON COMMIT DROP AS
+DROP TABLE IF EXISTS public._org_backfill;
+CREATE TABLE public._org_backfill AS
 WITH raw AS (
   SELECT u.id AS user_id, trim(o) AS org, 'approved' AS status
   FROM public.users u, unnest(string_to_array(u.organization, ',')) AS o
@@ -228,20 +238,22 @@ SELECT user_id,
 FROM raw
 WHERE org <> '' AND lower(org) <> 'none';
 
-DELETE FROM tmp_org_memberships WHERE org = '';
+DELETE FROM public._org_backfill WHERE org = '';
 
 INSERT INTO public.organizations (name, is_active)
 SELECT DISTINCT ON (org) org, NOT is_write_in
-FROM tmp_org_memberships
+FROM public._org_backfill
 ORDER BY org, is_write_in
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO public.user_organizations (user_id, organization_id, status)
 SELECT DISTINCT ON (m.user_id, o.id) m.user_id, o.id, m.status
-FROM tmp_org_memberships m
+FROM public._org_backfill m
 JOIN public.organizations o ON o.name = m.org
 ORDER BY m.user_id, o.id, (m.status = 'approved') DESC
 ON CONFLICT DO NOTHING;
+
+DROP TABLE public._org_backfill;
 
 -- Keep users.organization / pending_organizations as a read-only cache of
 -- the membership tables so existing screens keep working.
@@ -303,8 +315,14 @@ CREATE TRIGGER organizations_rename_sync
 
 -- Normalize the cache once for everyone
 UPDATE public.user_organizations SET status = status;
-UPDATE public.users SET organization = NULL, pending_organizations = NULL
-WHERE id NOT IN (SELECT user_id FROM public.user_organizations);
+-- Only clear placeholder values; never blank a real organization list
+-- (if the backfill above didn't run, that list is the only copy).
+UPDATE public.users SET organization = NULL
+WHERE lower(trim(organization)) IN ('', 'none')
+  AND id NOT IN (SELECT user_id FROM public.user_organizations);
+UPDATE public.users SET pending_organizations = NULL
+WHERE lower(trim(pending_organizations)) IN ('', 'none')
+  AND id NOT IN (SELECT user_id FROM public.user_organizations);
 
 -- ==================== RIDE REQUESTS ====================
 
@@ -341,6 +359,7 @@ ALTER TABLE public.ride_requests
   ADD CONSTRAINT ride_requests_status_check
   CHECK (status IN ('open', 'matched', 'completed', 'cancelled', 'expired'));
 
+ALTER TABLE public.ride_requests DROP CONSTRAINT IF EXISTS ride_requests_notes_length;
 ALTER TABLE public.ride_requests
   ADD CONSTRAINT ride_requests_notes_length CHECK (char_length(notes) <= 1000) NOT VALID;
 
@@ -433,6 +452,7 @@ ALTER TABLE public.ride_offers
   ADD CONSTRAINT ride_offers_status_check
   CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'backed_out', 'no_show', 'cancelled'));
 
+ALTER TABLE public.ride_offers DROP CONSTRAINT IF EXISTS ride_offers_message_length;
 ALTER TABLE public.ride_offers
   ADD CONSTRAINT ride_offers_message_length CHECK (char_length(message) <= 1000) NOT VALID;
 
@@ -554,6 +574,7 @@ CREATE POLICY "Users can send connection requests"
   );
 
 -- Either side may remove a connection (used when blocking / unfriending)
+DROP POLICY IF EXISTS "Participants can remove connections" ON public.connections;
 CREATE POLICY "Participants can remove connections"
   ON public.connections FOR DELETE TO authenticated
   USING (
@@ -565,6 +586,7 @@ CREATE POLICY "Participants can remove connections"
 ALTER TABLE public.messages
   ADD COLUMN IF NOT EXISTS is_admin_message BOOLEAN NOT NULL DEFAULT false;
 
+ALTER TABLE public.messages DROP CONSTRAINT IF EXISTS messages_content_length;
 ALTER TABLE public.messages
   ADD CONSTRAINT messages_content_length CHECK (char_length(content) BETWEEN 1 AND 4000) NOT VALID;
 
@@ -622,6 +644,7 @@ CREATE TABLE IF NOT EXISTS public.message_reads (
 
 ALTER TABLE public.message_reads ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users manage own read markers" ON public.message_reads;
 CREATE POLICY "Users manage own read markers"
   ON public.message_reads FOR ALL TO authenticated
   USING (user_id = (SELECT auth.uid()))
@@ -689,10 +712,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON public.notifications(user_i
 
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Users can view own notifications" ON public.notifications;
 CREATE POLICY "Users can view own notifications"
   ON public.notifications FOR SELECT TO authenticated
   USING (user_id = (SELECT auth.uid()));
 
+DROP POLICY IF EXISTS "Users can mark own notifications read" ON public.notifications;
 CREATE POLICY "Users can mark own notifications read"
   ON public.notifications FOR UPDATE TO authenticated
   USING (user_id = (SELECT auth.uid()))
@@ -703,7 +728,11 @@ GRANT UPDATE (read_at) ON public.notifications TO authenticated;
 
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+     AND NOT EXISTS (
+       SELECT 1 FROM pg_publication_tables
+       WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'notifications'
+     ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
   END IF;
 END $$;
