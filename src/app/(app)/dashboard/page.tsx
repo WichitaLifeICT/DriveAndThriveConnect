@@ -1,4 +1,5 @@
-import { getMyRideRequests, getDashboardStats, getPopularRoutes, getMyDrives } from "@/actions/rides";
+import { getMyRideRequests, getDashboardStats, getPopularRoutes, getMyDrives, getMatchedDrivers } from "@/actions/rides";
+import { rideEstimateLabel } from "@/lib/eta";
 import { getProfile } from "@/actions/profile";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +18,9 @@ export default async function DashboardPage() {
 
   const activeRides = rides.filter(
     (r) => r.status === "open" || r.status === "matched"
+  );
+  const matchedDrivers = await getMatchedDrivers(
+    activeRides.filter((r) => r.status === "matched").map((r) => r.id)
   );
   const pastRides = rides.filter(
     (r) => r.status === "completed" || r.status === "cancelled" || r.status === "expired"
@@ -92,9 +96,13 @@ export default async function DashboardPage() {
                   <p className="text-sm font-medium text-gray-900">
                     {formatRideDate(d.ride_date)} at {formatRideTime(d.ride_time)}
                   </p>
-                  <p className="text-xs text-gray-500">
-                    {(d.rider as unknown as { full_name: string | null } | null)?.full_name || "Rider"} ·{" "}
+                  <p className="text-sm text-gray-700 mt-0.5">
+                    Driving <span className="font-medium">{d.riderName}</span>
+                  </p>
+                  <p className="text-xs text-teal-700">{d.relationship}</p>
+                  <p className="text-xs text-gray-500 mt-1">
                     {d.pickup_address.split(",")[0]} → {d.dropoff_address.split(",")[0]}
+                    {rideEstimateLabel(d) ? ` · ${rideEstimateLabel(d)}` : ""}
                   </p>
                 </Card>
               </Link>
@@ -202,8 +210,19 @@ export default async function DashboardPage() {
                         <span className="line-clamp-1">{ride.dropoff_address}</span>
                       </div>
                     </div>
-                    <div className="mt-2 flex items-center gap-2">
+                    {matchedDrivers[ride.id] && (
+                      <div className="mt-2 p-2 rounded-lg bg-blue-50">
+                        <p className="text-sm text-gray-900">
+                          Driver: <span className="font-medium">{matchedDrivers[ride.id].driverName}</span>
+                        </p>
+                        <p className="text-xs text-blue-800">{matchedDrivers[ride.id].relationship}</p>
+                      </div>
+                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="text-xs text-gray-400">{visConfig?.label}</span>
+                      {rideEstimateLabel(ride) && (
+                        <span className="text-xs text-gray-500">{rideEstimateLabel(ride)}</span>
+                      )}
                       {ride.is_round_trip && (
                         <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">Round trip</span>
                       )}

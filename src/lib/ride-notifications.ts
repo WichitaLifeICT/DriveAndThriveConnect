@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { notifyUsers } from "@/lib/notify";
 import { formatClockTime, formatLongDate } from "@/lib/time";
 import { logError } from "@/lib/log";
+import { rideEstimateLabel } from "@/lib/eta";
 
 /**
  * Tell every driver who can see a newly posted ride about it. Eligibility
@@ -14,7 +15,7 @@ export async function notifyEligibleDrivers(rideId: string, riderName: string, e
   const [{ data: ride }, { data: drivers, error }] = await Promise.all([
     admin
       .from("ride_requests")
-      .select("pickup_address, dropoff_address, ride_date, ride_time, is_round_trip, return_time, notes")
+      .select("pickup_address, dropoff_address, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, ride_date, ride_time, is_round_trip, return_time, notes")
       .eq("id", rideId)
       .single(),
     admin.rpc("eligible_drivers_for_ride", { p_ride_id: rideId }),
@@ -32,6 +33,8 @@ export async function notifyEligibleDrivers(rideId: string, riderName: string, e
     { label: "Date", value: formatLongDate(ride.ride_date) },
     { label: "Time", value: formatClockTime(ride.ride_time) },
   ];
+  const estimate = rideEstimateLabel(ride);
+  if (estimate) details.push({ label: "Trip", value: estimate });
   if (ride.is_round_trip) {
     details.push({
       label: "Return",

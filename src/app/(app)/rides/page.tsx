@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { VISIBILITY_TIERS } from "@/lib/constants";
 import { formatRideDate, formatRideTime } from "@/lib/utils/format";
 import Link from "next/link";
+import { rideEstimateLabel } from "@/lib/eta";
 
 export default async function BrowseRidesPage() {
   const rides = await getEligibleRideRequests();
@@ -72,6 +73,9 @@ export default async function BrowseRidesPage() {
                   </div>
 
                   <div className="mt-2 flex items-center gap-2">
+                    {rideEstimateLabel(ride) && (
+                      <span className="text-xs text-gray-500 shrink-0">{rideEstimateLabel(ride)}</span>
+                    )}
                     {ride.is_round_trip && (
                       <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">
                         Round trip
