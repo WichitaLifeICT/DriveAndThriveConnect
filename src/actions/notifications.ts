@@ -1,7 +1,6 @@
 "use server";
 
 import { requireUser } from "@/lib/auth";
-import { revalidatePath } from "next/cache";
 
 export async function getMyNotifications(limit = 50) {
   const { supabase, user } = await requireUser();
@@ -24,7 +23,8 @@ export async function markNotificationsRead(ids?: string[]) {
   if (ids && ids.length > 0) query = query.in("id", ids);
   const { error } = await query;
   if (error) return { error: error.message };
-  revalidatePath("/notifications");
+  // No revalidatePath here: it would refresh the current page and cancel a
+  // navigation the user just started by tapping a notification.
   return { success: true };
 }
 

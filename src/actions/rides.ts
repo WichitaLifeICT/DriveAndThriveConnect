@@ -12,6 +12,8 @@ import { redirect } from "next/navigation";
 import { randomBytes, randomUUID } from "crypto";
 import { notifyEligibleDrivers } from "@/lib/ride-notifications";
 import { RIDE_COLUMNS } from "@/lib/constants";
+import { geocodeUsAddress } from "@/lib/geocode";
+import { describeRelationships, relationshipLabel } from "@/lib/relationships";
 import type { RideRequest } from "@/types/database";
 
 type RideWithRider = RideRequest & {
@@ -68,6 +70,10 @@ function parseRideFields(formData: FormData): { fields?: RideFields; error?: str
     visibility: str(formData, "visibility") as RideFields["visibility"],
   };
 
+  // The place picker sends 0,0 for typed-in addresses: treat as unknown
+  if (fields.pickup_lat === 0 && fields.pickup_lng === 0) fields.pickup_lat = fields.pickup_lng = null;
+  if (fields.dropoff_lat === 0 && fields.dropoff_lng === 0) fields.dropoff_lat = fields.dropoff_lng = null;
+
   if (!fields.pickup_address) return { error: "Please enter a pickup location." };
   if (!fields.dropoff_address) return { error: "Please enter a drop-off location." };
   if (fields.pickup_address.length > 300 || fields.dropoff_address.length > 300) {
@@ -92,6 +98,22 @@ function parseRideFields(formData: FormData): { fields?: RideFields; error?: str
   return { fields };
 }
 
+/** Fill in coordinates for typed-in addresses so trips get time estimates. */
+async function addMissingCoordinates(fields: RideFields): Promise<void> {
+  const [pickup, dropoff] = await Promise.all([
+    fields.pickup_lat == null ? geocodeUsAddress(fields.pickup_address) : Promise.resolve(null),
+    fields.dropoff_lat == null ? geocodeUsAddress(fields.dropoff_address) : Promise.resolve(null),
+  ]);
+  if (pickup) {
+    fields.pickup_lat = pickup.lat;
+    fields.pickup_lng = pickup.lng;
+  }
+  if (dropoff) {
+    fields.dropoff_lat = dropoff.lat;
+    fields.dropoff_lng = dropoff.lng;
+  }
+}
+
 async function getDisplayName(userId: string): Promise<string> {
   const { data } = await createAdminClient().from("users").select("full_name").eq("id", userId).single();
   return data?.full_name || "Someone";
@@ -104,6 +126,7 @@ export async function createRideRequest(formData: FormData) {
 
   const { fields, error: validationError } = parseRideFields(formData);
   if (!fields) return { error: validationError };
+  await addMissingCoordinates(fields);
 
   const separateReturn = fields.is_round_trip && formData.get("separate_return") === "true";
   const repeatWeeks = Math.min(Math.max(parseInt(str(formData, "repeat_weeks") || "1", 10) || 1, 1), MAX_REPEAT_WEEKS);
@@ -180,6 +203,7 @@ export async function updateRideRequest(rideId: string, formData: FormData) {
 
   const { fields, error: validationError } = parseRideFields(formData);
   if (!fields) return { error: validationError };
+  await addMissingCoordinates(fields);
 
   const { error } = await supabase
     .from("ride_requests")
@@ -429,12 +453,54 @@ export async function getMyDrives() {
 
   const { data } = await admin
     .from("ride_requests")
-    .select("id, ride_date, ride_time, pickup_address, dropoff_address, status, rider:users!rider_id(full_name)")
+    .select("id, rider_id, ride_date, ride_time, pickup_address, dropoff_address, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, status, rider:users!rider_id(full_name)")
     .in("id", ids)
     .in("status", ["matched"])
     .order("ride_date", { ascending: true })
     .order("ride_time", { ascending: true });
-  return data || [];
+
+  const rides = data || [];
+  const relationships = await describeRelationships(user.id, rides.map((r) => r.rider_id));
+  return rides.map((r) => ({
+    ...r,
+    riderName: (r.rider as unknown as { full_name: string | null } | null)?.full_name || "Rider",
+    relationship: relationshipLabel(relationships[r.rider_id]),
+  }));
+}
+
+/**
+ * For the rider's matched rides: who is driving and how they're connected,
+ * keyed by ride id.
+ */
+export async function getMatchedDrivers(rideIds: string[]) {
+  const { user } = await requireUser();
+  if (rideIds.length === 0) return {};
+  const admin = createAdminClient();
+
+  const { data: rides } = await admin
+    .from("ride_requests")
+    .select("id, matched_offer_id")
+    .in("id", rideIds)
+    .eq("rider_id", user.id)
+    .not("matched_offer_id", "is", null);
+  const offerIds = (rides || []).map((r) => r.matched_offer_id as string);
+  if (offerIds.length === 0) return {};
+
+  const { data: offers } = await admin
+    .from("ride_offers")
+    .select("id, ride_request_id, driver_id, driver:users!driver_id(full_name)")
+    .in("id", offerIds)
+    .eq("status", "accepted");
+
+  const relationships = await describeRelationships(user.id, (offers || []).map((o) => o.driver_id));
+  const result: Record<string, { driverName: string; relationship: string }> = {};
+  for (const o of offers || []) {
+    result[o.ride_request_id] = {
+      driverName: (o.driver as unknown as { full_name: string | null } | null)?.full_name || "Your driver",
+      relationship: relationshipLabel(relationships[o.driver_id]),
+    };
+  }
+  return result;
 }
 
 export async function getRideRequest(id: string) {
@@ -472,10 +538,12 @@ export async function getRideContacts(rideId: string) {
     .single();
   if (!other) return null;
 
+  const relationships = await describeRelationships(user.id, [otherId]);
   return {
     name: other.full_name,
     phone: other.share_phone_when_matched ? other.phone : null,
     role: found.role === "rider" ? "driver" : "rider",
+    relationship: relationshipLabel(relationships[otherId]),
   };
 }
 

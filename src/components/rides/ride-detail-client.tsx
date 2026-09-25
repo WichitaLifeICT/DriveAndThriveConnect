@@ -9,6 +9,7 @@ import { getOrCreateThread } from "@/actions/messages";
 import { blockUser, unblockUser } from "@/actions/safety";
 import { ReportDialog } from "@/components/safety/report-dialog";
 import { toE164 } from "@/lib/phone";
+import { rideEstimateLabel } from "@/lib/eta";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -107,7 +108,7 @@ interface RideDetailClientProps {
   driverRatings: Record<string, { average: number; count: number }>;
   acceptedDriverId: string | null;
   acceptedDriverName: string | null;
-  contact: { name: string | null; phone: string | null; role: string } | null;
+  contact: { name: string | null; phone: string | null; role: string; relationship: string } | null;
   shareToken: string | null;
   emergencyContact: { name: string | null; phone: string | null } | null;
   seriesUpcoming: number;
@@ -257,6 +258,9 @@ export function RideDetailClient({
             <p className="text-sm text-gray-500">
               Posted by {ride.rider?.full_name || "Unknown"}
             </p>
+            {rideEstimateLabel(ride) && (
+              <p className="text-sm text-gray-600 mt-0.5">🕒 {rideEstimateLabel(ride)} (estimate)</p>
+            )}
           </div>
           <Badge className={statusConfig.color}>{statusConfig.label}</Badge>
         </div>
@@ -463,9 +467,10 @@ export function RideDetailClient({
       {/* Contact + safety for a matched ride */}
       {isParticipant && isMatched && (
         <Card padding="lg">
-          <h3 className="font-medium text-gray-900 mb-3">
+          <h3 className="font-medium text-gray-900">
             {contact?.role === "driver" ? "Your driver" : "Your rider"}: {contact?.name || "Unknown"}
           </h3>
+          {contact?.relationship && <p className="text-sm text-teal-700 mb-3">{contact.relationship}</p>}
           <div className="flex flex-wrap gap-2">
             {contact?.phone ? (
               <>

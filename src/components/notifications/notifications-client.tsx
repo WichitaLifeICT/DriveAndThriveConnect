@@ -31,10 +31,10 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
     setLoading(false);
   }
 
-  async function open(n: NotificationItem) {
-    if (!n.read_at) await markNotificationsRead([n.id]);
-    if (n.link) router.push(n.link);
-    else router.refresh();
+  // Navigation happens through the link itself; marking read runs in the
+  // background so it can't hold up or cancel the navigation.
+  function markRead(n: NotificationItem) {
+    if (!n.read_at) void markNotificationsRead([n.id]);
   }
 
   return (
@@ -57,7 +57,12 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
       ) : (
         <div className="space-y-2">
           {notifications.map((n) => (
-            <button key={n.id} onClick={() => open(n)} className="block w-full text-left">
+            <Link
+              key={n.id}
+              href={n.link || "/notifications"}
+              onClick={() => markRead(n)}
+              className="block w-full text-left"
+            >
               <Card
                 className={clsx(
                   "hover:border-teal-300 transition-colors",
@@ -78,7 +83,7 @@ export function NotificationsClient({ notifications }: { notifications: Notifica
                   </div>
                 </div>
               </Card>
-            </button>
+            </Link>
           ))}
         </div>
       )}
