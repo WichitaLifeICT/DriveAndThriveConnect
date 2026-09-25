@@ -1,36 +1,122 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Drive & Thrive Connect
 
-## Getting Started
+Community ride coordination for Wichita: riders post ride requests, and
+drivers from their personal network, their organization, or the wider pool
+of admin-approved drivers offer to take them.
 
-First, run the development server:
+Built with **Next.js 16** (App Router, server actions), **Supabase**
+(Postgres, auth, storage, realtime) and **Resend** (email).
+
+> Setup steps that need an account or a decision (email domain, cron,
+> Supabase settings) are tracked in [`WORK_QUEUE.md`](WORK_QUEUE.md).
+
+## Features
+
+- **Rides** — one-off, round trip (optionally as a separate return ride), or
+  weekly for up to 12 weeks. Riders choose who sees each request: direct
+  connections, their organization's approved drivers, or all approved
+  community drivers. Riders can edit open requests and cancel one ride or a
+  whole series. Unmatched rides expire automatically after their time passes.
+- **Offers** — drivers offer, riders accept or decline. Drivers can withdraw
+  an offer, or back out of a matched ride (which reopens it and re-notifies
+  drivers). Riders can report a driver no-show.
+- **During the ride** — pickup / drop-off check-ins, the other person's phone
+  number (if they allow it), a live trip-status link to share with a trusted
+  contact, a one-tap text to the rider's emergency contact, and a 911 button.
+- **Safety** — block (hides rides, messages and requests both ways), report
+  (emails every admin), admin suspension (signs the person out, bans login,
+  cancels their rides and offers, reopens rides they were driving).
+- **Driver approval** — license and insurance photos with expiry dates,
+  reviewed by an admin. Drivers are warned 30 days before expiry and lose
+  approved-driver visibility when documents lapse.
+- **Notifications** — in-app notification center plus email for offers,
+  acceptances, messages (throttled), cancellations, reminders the day before
+  and a few hours before, approvals, and more.
+- **Messaging** — per-ride chat with realtime updates, unread badges, and
+  admins can read conversations and post into them.
+- **Accounts** — email/password or Google sign-in, invite links, friend codes,
+  password reset, download-my-data, and account deletion.
+- **Admin** — users, driver applications and renewals, organizations and
+  membership approvals, safety reports, conversations, location stats, and an
+  **impact report** (match rate, wait times, per-organization and monthly
+  breakdowns, CSV export with no personal details).
+
+## How access control works
+
+The browser talks to Supabase directly with the public anon key, so **the
+database is the security boundary**, not the app code:
+
+- Row-level security policies and column-level grants live in
+  `supabase/migrations/`. For example, users can't read each other's email or
+  phone, can't approve themselves, and only see rides their visibility tier
+  allows (`can_see_ride_request()`).
+- Anything that crosses users (accepting an offer, check-ins, suspensions,
+  notifications) runs in a **server action** with the service-role key, after
+  the action checks who the caller is (`src/lib/auth.ts`).
+- Every exported function in a `"use server"` file is a public endpoint.
+  Helpers that must not be callable from the browser live in `src/lib/`
+  (marked `server-only`).
+
+`supabase/tests/policies.test.sql` checks these rules. Run it after changing
+any policy.
+
+## Getting started
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # fill in your Supabase and Resend keys
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Database
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Migrations are plain SQL in `supabase/migrations/`, numbered in the order to
+apply them. For a new Supabase project, run them all in order in the SQL
+Editor (or with the Supabase CLI: `supabase db push`). For an existing
+project, run only the ones you haven't applied yet.
+`supabase/legacy/` holds old one-off scripts — **don't run them**.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+To make the first admin, sign up normally, then in the SQL Editor:
 
-## Learn More
+```sql
+update public.users set is_admin = true where email = 'you@example.org';
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Scheduled jobs
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`/api/cron` (daily by default, see `vercel.json`; hourly recommended) expires stale rides, sends ride
+reminders and "did your ride happen?" prompts, and handles driver document
+expiry. It requires `CRON_SECRET`; see `WORK_QUEUE.md` for setup.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Development
 
-## Deploy on Vercel
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Start the dev server |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | TypeScript |
+| `npm test` | Unit tests (Vitest) |
+| `npm run test:db` | Apply all migrations to a throwaway Postgres and run the access-control tests (needs `psql` and a local Postgres superuser via `PG*` env vars) |
+| `npm run check` | Lint + typecheck + unit tests |
+| `npm run build` | Production build |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+CI (`.github/workflows/ci.yml`) runs all of these on every pull request,
+including the database tests against Postgres 16.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Project layout
+
+```
+src/
+  actions/      server actions (one file per area)
+  app/          routes: (app) signed-in pages, (auth) sign-in pages,
+                admin/, api/ (cron, data export, CSV), trip/ (public share link)
+  components/   UI, grouped by feature
+  lib/          server helpers: auth, email, notifications, rate limits,
+                scheduled jobs, impact stats, time zone handling
+supabase/
+  migrations/   schema, policies, functions (apply in order)
+  tests/        stand-in for Supabase + access-control tests
+```
+
+Ride dates and times are stored as local Wichita time (America/Chicago); use
+the helpers in `src/lib/time.ts` rather than `new Date()` on them.

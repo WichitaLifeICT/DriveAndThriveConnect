@@ -1,16 +1,25 @@
 "use server";
 
 import { createServerClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { requireActiveUser, requireUser } from "@/lib/auth";
+import { withinRateLimit, RATE_LIMIT_MESSAGE } from "@/lib/rate-limit";
+import { notifyUser } from "@/lib/notify";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-export async function sendFriendRequest(friendCode: string) {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+async function getDisplayName(userId: string): Promise<string> {
+  const { data } = await createAdminClient().from("users").select("full_name").eq("id", userId).single();
+  return data?.full_name || "Someone";
+}
 
-  // Look up user by friend code
-  const { data: target } = await supabase
+export async function sendFriendRequest(friendCode: string) {
+  const { supabase, user } = await requireActiveUser();
+
+  if (!(await withinRateLimit(user.id, "friend_request"))) return { error: RATE_LIMIT_MESSAGE };
+
+  // Look up user by friend code (not readable by other users directly)
+  const { data: target } = await createAdminClient()
     .from("users")
     .select("id, full_name")
     .eq("friend_code", friendCode.toUpperCase().trim())
@@ -49,8 +58,17 @@ export async function sendFriendRequest(friendCode: string) {
   });
 
   if (error) {
+    // Blocked either way, or suspended: don't reveal which
+    if (error.code === "42501") return { error: "No user found with that friend code." };
     return { error: error.message };
   }
+
+  await notifyUser(target.id, {
+    type: "connection_request",
+    title: `${await getDisplayName(user.id)} wants to connect`,
+    body: "Accept to share rides with each other.",
+    link: "/network",
+  });
 
   revalidatePath("/network");
   return { success: true, name: target.full_name };
@@ -61,15 +79,24 @@ export async function acceptConnection(connectionId: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { error } = await supabase
+  const { data: accepted, error } = await supabase
     .from("connections")
     .update({ status: "accepted", updated_at: new Date().toISOString() })
     .eq("id", connectionId)
-    .eq("addressee_id", user.id);
+    .eq("addressee_id", user.id)
+    .select("requester_id");
 
   if (error) {
     return { error: error.message };
   }
+
+  await notifyUser(accepted?.[0]?.requester_id, {
+    type: "connection_accepted",
+    title: `${await getDisplayName(user.id)} accepted your connection request`,
+    body: "You can now see each other's circle ride requests.",
+    link: "/network",
+    skipEmail: true,
+  });
 
   revalidatePath("/network");
   return { success: true };
@@ -90,6 +117,19 @@ export async function declineConnection(connectionId: string) {
     return { error: error.message };
   }
 
+  revalidatePath("/network");
+  return { success: true };
+}
+
+/** Remove a connection (either person can). */
+export async function removeConnection(connectionId: string) {
+  const { supabase, user } = await requireUser();
+  const { error } = await supabase
+    .from("connections")
+    .delete()
+    .eq("id", connectionId)
+    .or(`requester_id.eq.${user.id},addressee_id.eq.${user.id}`);
+  if (error) return { error: error.message };
   revalidatePath("/network");
   return { success: true };
 }

@@ -1,25 +1,15 @@
 "use server";
 
-import { createServerClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireAdmin } from "@/lib/auth";
+import { notifyUser, notifyUsers } from "@/lib/notify";
+import { normalizeUsPhone } from "@/lib/phone";
+import { appUrl } from "@/lib/app-url";
+import { logError } from "@/lib/log";
+import { formatClockTime, formatLongDate } from "@/lib/time";
+import { adminSetUserOrganizations } from "@/actions/organizations";
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { WICHITA_LOCATIONS, WICHITA_ZIP_NEIGHBORHOODS, extractZip } from "@/lib/wichita-locations";
-
-async function requireAdmin() {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("*")
-    .eq("id", user.id)
-    .single();
-
-  if (!profile?.is_admin) redirect("/dashboard");
-  return user;
-}
 
 export async function getAdminStats() {
   await requireAdmin();
@@ -102,63 +92,6 @@ export async function getAdminRouteStats() {
   return { routes, topPickups, topDropoffs };
 }
 
-export async function getPendingApplications() {
-  await requireAdmin();
-  const admin = createAdminClient();
-
-  const { data } = await admin
-    .from("vetted_driver_status")
-    .select(`
-      *,
-      user:users!user_id(id, full_name, email, avatar_url, role, created_at)
-    `)
-    .eq("status", "pending")
-    .order("created_at", { ascending: true });
-
-  return data || [];
-}
-
-export async function approveDriver(userId: string) {
-  const adminUser = await requireAdmin();
-  const admin = createAdminClient();
-
-  const { error } = await admin
-    .from("vetted_driver_status")
-    .update({
-      status: "approved",
-      reviewed_by: adminUser.id,
-      reviewed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId);
-
-  if (error) return { error: error.message };
-
-  revalidatePath("/admin/vetting");
-  return { success: true };
-}
-
-export async function denyDriver(userId: string, notes?: string) {
-  const adminUser = await requireAdmin();
-  const admin = createAdminClient();
-
-  const { error } = await admin
-    .from("vetted_driver_status")
-    .update({
-      status: "denied",
-      admin_notes: notes || null,
-      reviewed_by: adminUser.id,
-      reviewed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId);
-
-  if (error) return { error: error.message };
-
-  revalidatePath("/admin/vetting");
-  return { success: true };
-}
-
 export async function getAllUsers() {
   await requireAdmin();
   const admin = createAdminClient();
@@ -171,20 +104,21 @@ export async function getAllUsers() {
   return data || [];
 }
 
+
+/** Map organization names (as the users screen edits them) to ids. */
+async function organizationIdsFromNames(names: string): Promise<string[]> {
+  const wanted = names
+    .split(",")
+    .map((n) => n.trim())
+    .filter((n) => n && n.toLowerCase() !== "none");
+  if (wanted.length === 0) return [];
+  const { data } = await createAdminClient().from("organizations").select("id, name").in("name", wanted);
+  return (data || []).map((o) => o.id);
+}
+
 export async function adminUpdateUserOrg(userId: string, organization: string) {
   await requireAdmin();
-  const admin = createAdminClient();
-
-  const { error } = await admin
-    .from("users")
-    .update({
-      organization: organization || null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", userId);
-
-  if (error) return { error: error.message };
-
+  await adminSetUserOrganizations(userId, await organizationIdsFromNames(organization || ""));
   revalidatePath("/admin/users");
   return { success: true };
 }
@@ -207,20 +141,169 @@ export async function toggleAdmin(userId: string, makeAdmin: boolean) {
   return { success: true };
 }
 
-export async function suspendUser(userId: string) {
+/**
+ * Suspend a user: they're signed out and can't sign in (auth ban), their
+ * open rides and offers are cancelled, riders they were driving are told
+ * and their rides reopened, and database rules stop them acting.
+ */
+export async function suspendUser(userId: string, reason?: string) {
+  const { user: adminUser } = await requireAdmin();
+  if (userId === adminUser.id) return { error: "You can't suspend yourself." };
+  const admin = createAdminClient();
+  const now = new Date().toISOString();
+
+  const { error } = await admin
+    .from("users")
+    .update({ suspended_at: now, suspended_reason: reason?.trim() || null, updated_at: now })
+    .eq("id", userId);
+  if (error) return { error: error.message };
+
+  const { error: banError } = await admin.auth.admin.updateUserById(userId, { ban_duration: "876000h" });
+  if (banError) logError("admin.suspend.ban", banError, { userId });
+
+  await admin
+    .from("vetted_driver_status")
+    .update({ status: "suspended", updated_at: now })
+    .eq("user_id", userId)
+    .in("status", ["approved", "pending"]);
+
+  // Their open rides are cancelled; drivers who offered are told
+  const { data: cancelledRides } = await admin
+    .from("ride_requests")
+    .update({ status: "cancelled", cancelled_at: now, updated_at: now })
+    .eq("rider_id", userId)
+    .in("status", ["open", "matched"])
+    .select("id, ride_date, ride_time");
+  const cancelledIds = (cancelledRides || []).map((r) => r.id);
+  if (cancelledIds.length > 0) {
+    const { data: offers } = await admin
+      .from("ride_offers")
+      .update({ status: "cancelled", updated_at: now })
+      .in("ride_request_id", cancelledIds)
+      .in("status", ["pending", "accepted"])
+      .select("driver_id");
+    await notifyUsers(
+      (offers || []).map((o) => o.driver_id),
+      {
+        type: "ride_cancelled",
+        title: "A ride you offered on was cancelled",
+        body: "The ride request is no longer available.",
+        forceEmail: true,
+      }
+    );
+  }
+
+  // Their pending offers are withdrawn
+  await admin
+    .from("ride_offers")
+    .update({ status: "withdrawn", updated_at: now })
+    .eq("driver_id", userId)
+    .eq("status", "pending");
+
+  // Rides they were driving go back to open
+  const { data: accepted } = await admin
+    .from("ride_offers")
+    .update({ status: "cancelled", updated_at: now })
+    .eq("driver_id", userId)
+    .eq("status", "accepted")
+    .select("ride_request_id");
+  const drivingIds = (accepted || []).map((o) => o.ride_request_id);
+  if (drivingIds.length > 0) {
+    const { data: reopened } = await admin
+      .from("ride_requests")
+      .update({ status: "open", matched_offer_id: null, matched_at: null, picked_up_at: null, updated_at: now })
+      .in("id", drivingIds)
+      .eq("status", "matched")
+      .select("id, rider_id, ride_date, ride_time");
+    for (const ride of reopened || []) {
+      await notifyUser(ride.rider_id, {
+        type: "driver_backed_out",
+        title: "Your driver is no longer available",
+        body: `Your ride on ${formatLongDate(ride.ride_date)} at ${formatClockTime(ride.ride_time)} is open again. Other drivers can now offer.`,
+        link: `/rides/${ride.id}`,
+        forceEmail: true,
+      });
+    }
+  }
+
+  await notifyUser(userId, {
+    type: "account_suspended",
+    title: "Your Drive & Thrive Connect account has been suspended",
+    body: reason?.trim()
+      ? `Reason: ${reason.trim()}. Contact the program admins if you have questions.`
+      : "Contact the program admins if you have questions.",
+    forceEmail: true,
+  });
+
+  revalidatePath("/admin/users");
+  revalidatePath("/admin/reports");
+  return { success: true };
+}
+
+export async function unsuspendUser(userId: string) {
   await requireAdmin();
   const admin = createAdminClient();
 
-  // Mark any vetted status as suspended
-  await admin
-    .from("vetted_driver_status")
-    .update({
-      status: "suspended",
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId);
+  const { error } = await admin
+    .from("users")
+    .update({ suspended_at: null, suspended_reason: null, updated_at: new Date().toISOString() })
+    .eq("id", userId);
+  if (error) return { error: error.message };
 
+  const { error: banError } = await admin.auth.admin.updateUserById(userId, { ban_duration: "none" });
+  if (banError) logError("admin.unsuspend.ban", banError, { userId });
+
+  // Driver approval stays suspended until an admin re-approves it
   revalidatePath("/admin/users");
+  return { success: true };
+}
+
+// ==================== Reports ====================
+
+export async function adminListReports(status?: "open" | "reviewing" | "resolved") {
+  await requireAdmin();
+  let query = createAdminClient()
+    .from("reports")
+    .select(`
+      *,
+      reporter:users!reporter_id(id, full_name, email, phone),
+      reported:users!reported_user_id(id, full_name, email, phone, suspended_at),
+      ride:ride_requests!ride_request_id(id, ride_date, ride_time, pickup_address, dropoff_address, status)
+    `)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (status) query = query.eq("status", status);
+  const { data } = await query;
+  return data || [];
+}
+
+export async function adminUpdateReport(reportId: string, status: "open" | "reviewing" | "resolved", notes?: string) {
+  const { user } = await requireAdmin();
+  const now = new Date().toISOString();
+  const { data, error } = await createAdminClient()
+    .from("reports")
+    .update({
+      status,
+      admin_notes: notes?.trim() || null,
+      resolved_by: status === "resolved" ? user.id : null,
+      resolved_at: status === "resolved" ? now : null,
+      updated_at: now,
+    })
+    .eq("id", reportId)
+    .select("reporter_id")
+    .single();
+  if (error) return { error: error.message };
+
+  if (status === "resolved") {
+    await notifyUser(data?.reporter_id, {
+      type: "report_update",
+      title: "Your report has been reviewed",
+      body: "Thank you for helping keep the community safe. An admin reviewed your report and took action where needed.",
+      skipEmail: true,
+    });
+  }
+
+  revalidatePath("/admin/reports");
   return { success: true };
 }
 
@@ -418,161 +501,74 @@ export async function getLocationStats() {
   return { presetStats, neighborhoodStats, timeWindowStats };
 }
 
-export async function applyForVetting(formData: FormData) {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
-
-  const { error } = await supabase.from("vetted_driver_status").insert({
-    user_id: user.id,
-    license_attestation: formData.get("license_attestation") === "true",
-    insurance_attestation: formData.get("insurance_attestation") === "true",
-    driver_scope: (formData.get("driver_scope") as string) || null,
-  });
-
-  if (error) {
-    if (error.code === "23505") {
-      return { error: "You've already submitted an application." };
-    }
-    return { error: error.message };
-  }
-
-  revalidatePath("/vetting");
-  return { success: true };
-}
-
-export async function getPendingOrgRequests() {
-  await requireAdmin();
-  const admin = createAdminClient();
-
-  const { data } = await admin
-    .from("users")
-    .select("id, full_name, email, role, organization, pending_organizations")
-    .not("pending_organizations", "is", null)
-    .neq("pending_organizations", "")
-    .order("updated_at", { ascending: false });
-
-  return data || [];
-}
-
-export async function approveUserOrg(userId: string, org: string) {
-  await requireAdmin();
-  const admin = createAdminClient();
-
-  const { data: user } = await admin
-    .from("users")
-    .select("organization, pending_organizations")
-    .eq("id", userId)
-    .single();
-
-  if (!user) return { error: "User not found" };
-
-  const approved = (user.organization || "")
-    .split(",")
-    .map((o: string) => o.trim())
-    .filter(Boolean);
-  const pending = (user.pending_organizations || "")
-    .split(",")
-    .map((o: string) => o.trim())
-    .filter(Boolean);
-
-  // Move org from pending to approved
-  if (!approved.includes(org)) approved.push(org);
-  const newPending = pending.filter((o: string) => o !== org);
-
-  const { error } = await admin
-    .from("users")
-    .update({
-      organization: approved.join(",") || null,
-      pending_organizations: newPending.length > 0 ? newPending.join(",") : null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", userId);
-
-  if (error) return { error: error.message };
-
-  revalidatePath("/admin/organizations");
-  revalidatePath("/admin/users");
-  return { success: true };
-}
-
-export async function denyUserOrg(userId: string, org: string) {
-  await requireAdmin();
-  const admin = createAdminClient();
-
-  const { data: user } = await admin
-    .from("users")
-    .select("pending_organizations")
-    .eq("id", userId)
-    .single();
-
-  if (!user) return { error: "User not found" };
-
-  const pending = (user.pending_organizations || "")
-    .split(",")
-    .map((o: string) => o.trim())
-    .filter(Boolean);
-
-  const newPending = pending.filter((o: string) => o !== org);
-
-  const { error } = await admin
-    .from("users")
-    .update({
-      pending_organizations: newPending.length > 0 ? newPending.join(",") : null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", userId);
-
-  if (error) return { error: error.message };
-
-  revalidatePath("/admin/organizations");
-  revalidatePath("/admin/users");
-  return { success: true };
-}
-
+/**
+ * Create an account for someone. By default they get an invite email to
+ * set their own password; a temporary password can be set instead.
+ */
 export async function adminCreateUser(formData: FormData) {
   await requireAdmin();
   const admin = createAdminClient();
 
-  const email = formData.get("email") as string;
-  const password = formData.get("password") as string;
-  const fullName = formData.get("full_name") as string;
-  const phone = (formData.get("phone") as string) || "";
-  const role = formData.get("role") as "rider" | "driver";
+  const email = ((formData.get("email") as string) || "").trim();
+  const password = (formData.get("password") as string) || "";
+  const fullName = ((formData.get("full_name") as string) || "").trim();
+  const role = formData.get("role") === "driver" ? "driver" : "rider";
   const organization = (formData.get("organization") as string) || "";
+  let phone: string | null;
+  try {
+    phone = normalizeUsPhone(formData.get("phone") as string);
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+  if (!email) return { error: "Email is required." };
 
-  // Create auth user via admin API
-  const { data: authData, error: authError } = await admin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: {
-      full_name: fullName,
-      phone,
-    },
-  });
+  const metadata = { full_name: fullName, phone: phone || undefined };
 
-  if (authError) return { error: authError.message };
-  if (!authData.user) return { error: "Failed to create user" };
+  let userId: string | undefined;
+  if (password) {
+    if (password.length < 8) return { error: "Temporary password must be at least 8 characters." };
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: metadata,
+    });
+    if (error) return { error: error.message };
+    userId = data.user?.id;
+  } else {
+    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+      data: metadata,
+      redirectTo: appUrl("/auth/callback?next=/reset-password"),
+    });
+    if (error) return { error: error.message };
+    userId = data.user?.id;
+  }
+  if (!userId) return { error: "Failed to create user" };
 
-  // The DB trigger creates the user row; now update role, org, phone
-  // Small delay to let trigger fire
-  await new Promise((r) => setTimeout(r, 500));
+  // The signup trigger creates the profile row in the same transaction as
+  // the auth user, but retry briefly in case of replication lag.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { data: row } = await admin.from("users").select("id").eq("id", userId).maybeSingle();
+    if (row) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
 
-  await admin
+  const { error: updateError } = await admin
     .from("users")
     .update({
       role,
-      phone: phone || null,
-      organization: organization || null,
+      phone,
       disclaimer_accepted: true,
       disclaimer_accepted_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    .eq("id", authData.user.id);
+    .eq("id", userId);
+  if (updateError) return { error: updateError.message };
+
+  await adminSetUserOrganizations(userId, await organizationIdsFromNames(organization));
 
   revalidatePath("/admin/users");
-  return { success: true };
+  return { success: true, invited: !password };
 }
 
 export async function adminEditUser(userId: string, formData: FormData) {
@@ -580,12 +576,20 @@ export async function adminEditUser(userId: string, formData: FormData) {
   const admin = createAdminClient();
 
   const fullName = formData.get("full_name") as string;
-  const phone = (formData.get("phone") as string) || null;
-  const role = formData.get("role") as "rider" | "driver";
-  const organization = (formData.get("organization") as string) || null;
-  const email = formData.get("email") as string;
+  const role = formData.get("role") === "driver" ? "driver" : "rider";
+  const organization = (formData.get("organization") as string) || "";
+  const email = ((formData.get("email") as string) || "").trim();
+  let phone: string | null;
+  try {
+    phone = normalizeUsPhone(formData.get("phone") as string);
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
 
-  // Update the users table
+  // Update auth first so the profile never shows an email login doesn't use
+  const { error: authError } = await admin.auth.admin.updateUserById(userId, { email });
+  if (authError) return { error: authError.message };
+
   const { error } = await admin
     .from("users")
     .update({
@@ -593,30 +597,23 @@ export async function adminEditUser(userId: string, formData: FormData) {
       phone,
       email,
       role,
-      organization,
       updated_at: new Date().toISOString(),
     })
     .eq("id", userId);
 
   if (error) return { error: error.message };
 
-  // Also update email in auth if it changed
-  await admin.auth.admin.updateUserById(userId, { email });
+  await adminSetUserOrganizations(userId, await organizationIdsFromNames(organization));
 
   revalidatePath("/admin/users");
   return { success: true };
 }
 
-export async function getMyVettingStatus() {
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+// ==================== Impact ====================
 
-  const { data } = await supabase
-    .from("vetted_driver_status")
-    .select("*")
-    .eq("user_id", user.id)
-    .single();
-
-  return data;
+/** Ride outcomes for rides dated within [from, to], overall / by org / by month. */
+export async function getImpactReport(from: string, to: string) {
+  await requireAdmin();
+  const { loadImpactRides, buildImpactReport } = await import("@/lib/impact");
+  return buildImpactReport(await loadImpactRides(from, to));
 }

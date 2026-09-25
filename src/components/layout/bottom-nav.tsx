@@ -52,7 +52,7 @@ const navItems = [
   },
 ];
 
-export function BottomNav() {
+export function BottomNav({ unreadMessages = 0 }: { unreadMessages?: number }) {
   const pathname = usePathname();
 
   return (
@@ -70,7 +70,14 @@ export function BottomNav() {
                 isActive ? "text-teal-600" : "text-gray-400 hover:text-gray-600"
               )}
             >
-              {item.icon}
+              <span className="relative">
+                {item.icon}
+                {item.href === "/messages" && unreadMessages > 0 && (
+                  <span className="absolute -top-1 -right-2 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-semibold flex items-center justify-center">
+                    {unreadMessages > 99 ? "99+" : unreadMessages}
+                  </span>
+                )}
+              </span>
               <span className="mt-1">{item.label}</span>
             </Link>
           );

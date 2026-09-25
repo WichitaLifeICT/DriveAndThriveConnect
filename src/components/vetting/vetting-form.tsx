@@ -1,17 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { applyForVetting } from "@/actions/admin";
+import { applyForVetting } from "@/actions/vetting";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DRIVER_SCOPES } from "@/lib/constants";
 import { useRouter } from "next/navigation";
 
-export function VettingForm() {
+export function VettingForm({ isRenewal = false, currentScope = "" }: { isRenewal?: boolean; currentScope?: string }) {
   const router = useRouter();
   const [licenseChecked, setLicenseChecked] = useState(false);
   const [insuranceChecked, setInsuranceChecked] = useState(false);
-  const [driverScope, setDriverScope] = useState("");
+  const [driverScope, setDriverScope] = useState(currentScope);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,10 +40,11 @@ export function VettingForm() {
 
   return (
     <Card padding="lg">
-      <h3 className="font-medium text-gray-900 mb-4">Apply for Vetting</h3>
+      <h3 className="font-medium text-gray-900 mb-4">{isRenewal ? "Renew your documents" : "Apply to be an approved driver"}</h3>
 
       <p className="text-sm text-gray-600 mb-4">
-        To become a vetted driver, please confirm the following and select your driving scope:
+        Upload a photo of your driver&apos;s license and insurance card. An admin reviews them before approving you.
+        Documents are stored privately and only admins can view them.
       </p>
 
       {error && (
@@ -83,6 +84,59 @@ export function VettingForm() {
           </div>
         </label>
 
+        {/* Documents */}
+        <div className="space-y-4 p-3 border border-gray-200 rounded-lg">
+          <div>
+            <label htmlFor="license_doc" className="block text-sm font-medium text-gray-900 mb-1">
+              Driver&apos;s license (photo or PDF)
+            </label>
+            <input
+              id="license_doc"
+              name="license_doc"
+              type="file"
+              accept="image/jpeg,image/png,image/heic,image/webp,application/pdf"
+              capture="environment"
+              required
+              className="block w-full text-sm text-gray-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-teal-50 file:text-teal-700"
+            />
+          </div>
+          <div>
+            <label htmlFor="license_expires_on" className="block text-sm text-gray-700 mb-1">License expiration date</label>
+            <input
+              id="license_expires_on"
+              name="license_expires_on"
+              type="date"
+              required
+              className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            />
+          </div>
+          <div>
+            <label htmlFor="insurance_doc" className="block text-sm font-medium text-gray-900 mb-1">
+              Insurance card (photo or PDF)
+            </label>
+            <input
+              id="insurance_doc"
+              name="insurance_doc"
+              type="file"
+              accept="image/jpeg,image/png,image/heic,image/webp,application/pdf"
+              capture="environment"
+              required
+              className="block w-full text-sm text-gray-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-teal-50 file:text-teal-700"
+            />
+          </div>
+          <div>
+            <label htmlFor="insurance_expires_on" className="block text-sm text-gray-700 mb-1">Insurance expiration date</label>
+            <input
+              id="insurance_expires_on"
+              name="insurance_expires_on"
+              type="date"
+              required
+              className="w-full rounded-lg border border-gray-300 px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            />
+          </div>
+          <p className="text-xs text-gray-400">Photos or PDFs up to 8 MB each.</p>
+        </div>
+
         {/* Driver Scope Selection */}
         <div>
           <p className="text-sm font-medium text-gray-900 mb-2">Driving Scope</p>
@@ -117,8 +171,8 @@ export function VettingForm() {
         </div>
 
         <p className="text-xs text-gray-400">
-          By submitting, you affirm the above attestations are true. Future phases may require
-          document verification.
+          By submitting, you affirm the above is true. Approval means an admin reviewed your documents — it is not a
+          background check. We&apos;ll remind you before your license or insurance expires.
         </p>
 
         <Button
@@ -127,7 +181,7 @@ export function VettingForm() {
           loading={loading}
           disabled={!licenseChecked || !insuranceChecked || !driverScope}
         >
-          Submit Application
+          {isRenewal ? "Submit updated documents" : "Submit Application"}
         </Button>
       </form>
     </Card>

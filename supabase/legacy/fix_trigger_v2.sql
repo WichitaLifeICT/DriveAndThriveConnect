@@ -1,5 +1,10 @@
 -- ============================================================
 -- RideConnectICT Trigger Fix v2
+--
+-- SUPERSEDED — do not run. Kept for history only. The latest migration
+-- in supabase/migrations defines the current handle_new_user(). Running
+-- this would reinstate the insecure `invited_by` auto-connect, and it
+-- deletes auth users.
 -- Run this entire script in Supabase SQL Editor
 -- ============================================================
 

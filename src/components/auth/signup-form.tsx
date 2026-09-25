@@ -5,28 +5,26 @@ import { signUpWithEmail, signInWithGoogle } from "@/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
-import { DISCLAIMER_TEXT, ORGANIZATIONS } from "@/lib/constants";
+import { DISCLAIMER_TEXT } from "@/lib/constants";
 import Link from "next/link";
 
 interface SignupFormProps {
-  invitedBy?: string;
+  inviteToken?: string;
   inviterName?: string;
+  organizations: { id: string; name: string }[];
 }
 
-export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
+export function SignupForm({ inviteToken, inviterName, organizations }: SignupFormProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
   const [isNone, setIsNone] = useState(false);
-  const [otherOrg, setOtherOrg] = useState("");
-  const [showOther, setShowOther] = useState(false);
+  const [checkEmail, setCheckEmail] = useState(false);
 
   function getOrgValue() {
     if (isNone) return "none";
-    const orgs = [...selectedOrgs];
-    if (showOther && otherOrg.trim()) orgs.push(`other: ${otherOrg.trim()}`);
-    return orgs.join(",") || "";
+    return selectedOrgs.join(",");
   }
 
   function toggleOrg(org: string) {
@@ -48,13 +46,16 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
     }
     setLoading(true);
     setError(null);
-    if (invitedBy) {
-      formData.set("invited_by", invitedBy);
+    if (inviteToken) {
+      formData.set("invite_token", inviteToken);
     }
-    formData.set("organization", orgVal);
+    formData.set("organization_ids", orgVal === "none" ? "" : orgVal);
     const result = await signUpWithEmail(formData);
     if (result?.error) {
       setError(result.error);
+      setLoading(false);
+    } else if (result && "confirmEmail" in result) {
+      setCheckEmail(true);
       setLoading(false);
     }
   }
@@ -71,11 +72,22 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
     }
     setLoading(true);
     setError(null);
-    const result = await signInWithGoogle(invitedBy, orgVal);
+    const result = await signInWithGoogle(inviteToken, orgVal === "none" ? "" : orgVal);
     if (result?.error) {
       setError(result.error);
       setLoading(false);
     }
+  }
+
+  if (checkEmail) {
+    return (
+      <Card padding="lg" className="text-center">
+        <h2 className="text-lg font-semibold text-gray-900 mb-2">Check your email</h2>
+        <p className="text-sm text-gray-600">
+          We sent you a link to confirm your email address. Open it on this device to finish creating your account.
+        </p>
+      </Card>
+    );
   }
 
   return (
@@ -116,8 +128,8 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
           name="password"
           type="password"
           label="Password"
-          placeholder="At least 6 characters"
-          minLength={6}
+          placeholder="At least 8 characters"
+          minLength={8}
           required
         />
         <Input
@@ -135,20 +147,20 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
           </label>
           <p className="text-xs text-gray-500 mb-2">Select all that apply</p>
           <div className="space-y-1.5">
-            {ORGANIZATIONS.map((org) => (
+            {organizations.map((org) => (
               <label
-                key={org}
+                key={org.id}
                 className={`flex items-center gap-2.5 p-2.5 border rounded-lg cursor-pointer transition-colors ${
-                  selectedOrgs.includes(org) ? "border-teal-500 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
+                  selectedOrgs.includes(org.id) ? "border-teal-500 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
                 }`}
               >
                 <input
                   type="checkbox"
-                  checked={selectedOrgs.includes(org)}
-                  onChange={() => toggleOrg(org)}
+                  checked={selectedOrgs.includes(org.id)}
+                  onChange={() => toggleOrg(org.id)}
                   className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
                 />
-                <span className="text-sm text-gray-900">{org}</span>
+                <span className="text-sm text-gray-900">{org.name}</span>
               </label>
             ))}
             <label
@@ -161,46 +173,17 @@ export function SignupForm({ invitedBy, inviterName }: SignupFormProps) {
                 checked={isNone}
                 onChange={() => {
                   setIsNone(!isNone);
-                  if (!isNone) {
-                    setSelectedOrgs([]);
-                    setShowOther(false);
-                  }
+                  if (!isNone) setSelectedOrgs([]);
                 }}
                 className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
               />
               <span className="text-sm text-gray-900">None</span>
             </label>
-            <label
-              className={`flex items-center gap-2.5 p-2.5 border rounded-lg cursor-pointer transition-colors ${
-                showOther ? "border-teal-500 bg-teal-50" : "border-gray-200 hover:bg-gray-50"
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={showOther}
-                onChange={() => {
-                  setShowOther(!showOther);
-                  if (!showOther) setIsNone(false);
-                }}
-                className="h-4 w-4 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
-              />
-              <span className="text-sm text-gray-900">Other</span>
-            </label>
           </div>
+          <p className="text-xs text-gray-400 mt-1.5">
+            Don&apos;t see your organization? Pick None for now and ask a program admin to add it.
+          </p>
         </div>
-
-        {showOther && (
-          <Input
-            id="other_org"
-            name="other_org"
-            type="text"
-            label="Organization name"
-            placeholder="Enter your organization name"
-            value={otherOrg}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setOtherOrg(e.target.value)}
-            required
-          />
-        )}
 
         {/* Disclaimer */}
         <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">

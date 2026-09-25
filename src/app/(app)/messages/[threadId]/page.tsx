@@ -1,6 +1,5 @@
-import { createServerClient } from "@/lib/supabase/server";
+import { requireUser } from "@/lib/auth";
 import { getThreadMessages } from "@/actions/messages";
-import { redirect } from "next/navigation";
 import { MessageThreadClient } from "@/components/messages/message-thread-client";
 
 export default async function MessageThreadPage({
@@ -9,9 +8,7 @@ export default async function MessageThreadPage({
   params: Promise<{ threadId: string }>;
 }) {
   const { threadId } = await params;
-  const supabase = await createServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect("/login");
+  const { supabase, user } = await requireUser();
 
   const messages = await getThreadMessages(threadId);
 
@@ -22,7 +19,7 @@ export default async function MessageThreadPage({
       *,
       rider:users!rider_id(id, full_name),
       driver:users!driver_id(id, full_name),
-      ride_request:ride_requests!ride_request_id(pickup_address, dropoff_address)
+      ride_request:ride_requests!ride_request_id(id, pickup_address, dropoff_address)
     `)
     .eq("id", threadId)
     .single();
@@ -31,16 +28,30 @@ export default async function MessageThreadPage({
     return <div className="text-center py-12 text-gray-500">Thread not found.</div>;
   }
 
-  const otherUser =
-    thread.rider_id === user.id ? thread.driver : thread.rider;
+  const otherUser = (thread.rider_id === user.id ? thread.driver : thread.rider) as {
+    id: string;
+    full_name: string | null;
+  } | null;
+  const otherUserId = thread.rider_id === user.id ? thread.driver_id : thread.rider_id;
+
+  const [{ data: myBlock }, { data: blocked }] = await Promise.all([
+    supabase.from("user_blocks").select("blocked_id").eq("blocker_id", user.id).eq("blocked_id", otherUserId).maybeSingle(),
+    supabase.rpc("is_blocked_between", { p_a: user.id, p_b: otherUserId }),
+  ]);
+
+  const rideRequest = thread.ride_request as { id: string; pickup_address: string; dropoff_address: string } | null;
 
   return (
     <MessageThreadClient
       threadId={threadId}
       messages={messages}
       currentUserId={user.id}
-      otherUserName={(otherUser as { full_name: string | null })?.full_name || "Unknown"}
-      rideInfo={thread.ride_request as { pickup_address: string; dropoff_address: string } | null}
+      otherUserId={otherUserId}
+      otherUserName={otherUser?.full_name || "Unknown"}
+      rideId={rideRequest?.id || null}
+      rideInfo={rideRequest}
+      blockedByMe={!!myBlock}
+      canSend={!blocked}
     />
   );
 }

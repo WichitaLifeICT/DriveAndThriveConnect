@@ -1,17 +1,18 @@
 "use client";
 
 import { useState, useMemo, useRef, useEffect } from "react";
-import { suspendUser, adminConnectUsers, adminUpdateUserOrg, toggleAdmin, adminCreateUser, adminEditUser } from "@/actions/admin";
+import { suspendUser, unsuspendUser, adminConnectUsers, adminUpdateUserOrg, toggleAdmin, adminCreateUser, adminEditUser } from "@/actions/admin";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatDateTime } from "@/lib/utils/format";
-import { ORGANIZATIONS } from "@/lib/constants";
 import { useRouter } from "next/navigation";
 import type { User } from "@/types/database";
 
 interface AdminUsersClientProps {
   users: User[];
+  /** Names of active organizations */
+  organizations: string[];
 }
 
 const ROLE_CONFIG: Record<string, { label: string; bg: string; text: string; avatar: string; border: string }> = {
@@ -159,10 +160,12 @@ function UserSelector({
 function AdminOrgPicker({
   userId,
   currentOrgs,
+  organizations,
   onSave,
 }: {
   userId: string;
   currentOrgs: string | null;
+  organizations: string[];
   onSave: (userId: string, orgs: string) => Promise<void>;
 }) {
   const parsed = currentOrgs?.split(",").filter((o) => o && o !== "none") || [];
@@ -204,7 +207,7 @@ function AdminOrgPicker({
       </button>
       {open && (
         <div className="absolute right-0 z-20 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 max-h-56 overflow-y-auto">
-          {ORGANIZATIONS.map((org) => (
+          {[...new Set([...organizations, ...parsed])].map((org) => (
             <label
               key={org}
               className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer"
@@ -225,7 +228,7 @@ function AdminOrgPicker({
 }
 
 /* ─── Main Component ─── */
-export function AdminUsersClient({ users }: AdminUsersClientProps) {
+export function AdminUsersClient({ users, organizations }: AdminUsersClientProps) {
   const router = useRouter();
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
@@ -277,9 +280,22 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
     return result;
   }, [users, search, roleFilter]);
 
-  async function handleSuspend(userId: string) {
-    setLoading(userId);
-    await suspendUser(userId);
+  async function handleSuspend(user: User) {
+    const reason = window.prompt(
+      `Suspend ${user.full_name || user.email}? They'll be signed out, their open rides and offers cancelled, and anyone they were driving told.\n\nReason (shown to the user):`
+    );
+    if (reason === null) return;
+    setLoading(user.id);
+    const result = await suspendUser(user.id, reason);
+    if (result?.error) window.alert(result.error);
+    router.refresh();
+    setLoading(null);
+  }
+
+  async function handleUnsuspend(user: User) {
+    if (!window.confirm(`Restore ${user.full_name || user.email}'s account? Driver approval stays suspended until re-approved.`)) return;
+    setLoading(user.id);
+    await unsuspendUser(user.id);
     router.refresh();
     setLoading(null);
   }
@@ -316,7 +332,10 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
     if (result.error) {
       setCreateMessage({ type: "error", text: result.error });
     } else {
-      setCreateMessage({ type: "success", text: `User created successfully.` });
+      setCreateMessage({
+        type: "success",
+        text: "invited" in result && result.invited ? "Invite email sent. They'll set their own password." : "User created successfully.",
+      });
       form.reset();
       router.refresh();
     }
@@ -408,7 +427,7 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
                   placeholder="Comma-separated orgs"
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                 />
-                <p className="text-[10px] text-gray-400 mt-0.5">Comma-separated: Hope 4 Da Hood,Family Promise</p>
+                <p className="text-[10px] text-gray-400 mt-0.5">Comma-separated names: {organizations.slice(0, 2).join(",")}</p>
               </div>
 
               {editMessage && (
@@ -591,7 +610,8 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
         {createOpen && (
           <form onSubmit={handleCreateUser} className="px-4 pb-4 pt-2 bg-gray-50 border-t border-gray-200 space-y-3">
             <p className="text-xs text-gray-500">
-              Create a new rider or driver account. The user will be able to log in immediately.
+              Create a rider or driver account. Leave the password blank to email them an invite to set their own
+              (recommended).
             </p>
 
             <div className="grid grid-cols-2 gap-3">
@@ -627,13 +647,12 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Password *</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Temporary password (optional)</label>
               <input
                 name="password"
                 type="text"
-                required
-                minLength={6}
-                placeholder="At least 6 characters"
+                minLength={8}
+                placeholder="Blank = send invite email"
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
               />
             </div>
@@ -658,7 +677,7 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
                   className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
                 >
                   <option value="">None</option>
-                  {ORGANIZATIONS.map((org) => (
+                  {organizations.map((org) => (
                     <option key={org} value={org}>{org}</option>
                   ))}
                 </select>
@@ -729,6 +748,11 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
                           Admin
                         </Badge>
                       )}
+                      {user.suspended_at && (
+                        <Badge className="bg-red-100 text-red-700 text-[10px]">
+                          Suspended
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -740,9 +764,16 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
                   >
                     Edit
                   </Button>
+                  <Link
+                    href={`/admin/threads?user=${user.id}`}
+                    className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-600 hover:bg-gray-50"
+                  >
+                    Messages
+                  </Link>
                   <AdminOrgPicker
                     userId={user.id}
                     currentOrgs={user.organization}
+                    organizations={organizations}
                     onSave={async (userId, orgs) => {
                       await adminUpdateUserOrg(userId, orgs);
                       router.refresh();
@@ -761,15 +792,26 @@ export function AdminUsersClient({ users }: AdminUsersClientProps) {
                   >
                     {user.is_admin ? "Remove Admin" : "Make Admin"}
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="danger"
-                    onClick={() => handleSuspend(user.id)}
-                    loading={loading === user.id}
-                    disabled={user.is_admin}
-                  >
-                    Suspend
-                  </Button>
+                  {user.suspended_at ? (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => handleUnsuspend(user)}
+                      loading={loading === user.id}
+                    >
+                      Unsuspend
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => handleSuspend(user)}
+                      loading={loading === user.id}
+                      disabled={user.is_admin}
+                    >
+                      Suspend
+                    </Button>
+                  )}
                 </div>
               </div>
             </Card>
